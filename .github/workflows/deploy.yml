@@ -83,11 +83,17 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Trigger a Scaleway Serverless Container redeploy so it pulls the new image.
-  # Uses PATCH /containers/v1beta1/regions/fr-par/containers/{id}
-  # with {"redeploy": true}.
+  # Roll the Scaleway Serverless Container to the freshly-pushed SHA-tagged
+  # image. We PATCH `registry_image` with the immutable staging-<sha> (or
+  # the release tag on prod) rather than PATCH {redeploy:true} on a rolling
+  # tag, so the container config always reflects exactly which commit is
+  # live and rollback is just "PATCH back to a previous SHA".
   #
-  # Prod redeploy is skipped if SCW_CONTAINER_ID_PROD is not yet configured
+  # The tofu module sets `lifecycle.ignore_changes = [registry_image]` on
+  # the container resource so the next `tofu apply` doesn't fight CI by
+  # resetting the image back to the literal tag in envs/*/main.tf.
+  #
+  # Prod deploy is skipped if SCW_CONTAINER_ID_PROD is not yet configured
   # (i.e. when prod infrastructure has not been provisioned yet).
   # ─────────────────────────────────────────────────────────────────────────────
   redeploy:
@@ -98,46 +104,50 @@ jobs:
     env:
       SCW_API_BASE: https://api.scaleway.com/containers/v1beta1/regions/fr-par/containers
     steps:
-      - name: Redeploy staging container
+      - name: Roll staging container to ${{ needs.meta.outputs.primary_tag }}
         if: needs.meta.outputs.env == 'staging'
+        env:
+          FULL_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
         run: |
-          echo "Triggering redeploy of staging container (ID: ${{ secrets.SCW_CONTAINER_ID_STAGING }})..."
+          echo "Rolling staging container (ID: ${{ secrets.SCW_CONTAINER_ID_STAGING }}) to image: ${FULL_IMAGE}"
           HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
             --request PATCH \
             --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
             --header "Content-Type: application/json" \
-            --data '{"redeploy": true}' \
+            --data "$(jq -nc --arg img "$FULL_IMAGE" '{registry_image: $img, redeploy: true}')" \
             "${{ env.SCW_API_BASE }}/${{ secrets.SCW_CONTAINER_ID_STAGING }}")
           echo "HTTP status: ${HTTP_STATUS}"
           cat /tmp/scw_response.json
           if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
-            echo "Scaleway redeploy API returned non-2xx status: ${HTTP_STATUS}"
+            echo "Scaleway container PATCH returned non-2xx status: ${HTTP_STATUS}"
             exit 1
           fi
-          echo "Staging redeploy triggered successfully."
+          echo "Staging container pinned to ${FULL_IMAGE}."
 
-      - name: Redeploy prod container
+      - name: Roll prod container to ${{ needs.meta.outputs.primary_tag }}
         if: needs.meta.outputs.env == 'prod'
+        env:
+          FULL_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
         run: |
           if [[ -z "${{ secrets.SCW_CONTAINER_ID_PROD }}" ]]; then
-            echo "SCW_CONTAINER_ID_PROD is not set — skipping prod redeploy."
+            echo "SCW_CONTAINER_ID_PROD is not set — skipping prod roll."
             echo "Set this secret once the prod Scaleway container has been provisioned."
             exit 0
           fi
-          echo "Triggering redeploy of prod container (ID: ${{ secrets.SCW_CONTAINER_ID_PROD }})..."
+          echo "Rolling prod container (ID: ${{ secrets.SCW_CONTAINER_ID_PROD }}) to image: ${FULL_IMAGE}"
           HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
             --request PATCH \
             --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
             --header "Content-Type: application/json" \
-            --data '{"redeploy": true}' \
+            --data "$(jq -nc --arg img "$FULL_IMAGE" '{registry_image: $img, redeploy: true}')" \
             "${{ env.SCW_API_BASE }}/${{ secrets.SCW_CONTAINER_ID_PROD }}")
           echo "HTTP status: ${HTTP_STATUS}"
           cat /tmp/scw_response.json
           if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
-            echo "Scaleway redeploy API returned non-2xx status: ${HTTP_STATUS}"
+            echo "Scaleway container PATCH returned non-2xx status: ${HTTP_STATUS}"
             exit 1
           fi
-          echo "Prod redeploy triggered successfully."
+          echo "Prod container pinned to ${FULL_IMAGE}."
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Publish the OpenAPI spec as an npm package to GitHub Packages.
