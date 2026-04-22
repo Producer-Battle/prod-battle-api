@@ -8,8 +8,12 @@ import {
   PRIVATE_SUBMIT_SECONDS_PRESETS,
   SUBMIT_SECONDS_DEFAULT,
 } from '../matchmaking/defaults.js';
+import { requireMatchQuota } from '../middleware/rate-limit.js';
 
 export const matchesRoutes = new OpenAPIHono();
+
+// Apply the anonymous match-creation quota only to POST /matches.
+matchesRoutes.use('/matches', requireMatchQuota());
 
 const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice'] as const;
 const PRIVATE_PRESETS = PRIVATE_SUBMIT_SECONDS_PRESETS as unknown as [number, ...number[]];

@@ -3,6 +3,7 @@ import type { ServerType } from '@hono/node-server';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { cors } from 'hono/cors';
 import { env } from './env.js';
+import { anonId } from './middleware/anon-id.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
 import { attachWebSocket } from './ws/index.js';
@@ -21,6 +22,10 @@ app.use(
     credentials: true,
   }),
 );
+
+// Assign (or generate) a persistent anonymous identity cookie so rate-limiters
+// and other per-visitor features have a stable key without requiring auth.
+app.use('*', anonId());
 
 registerRoutes(app);
 
