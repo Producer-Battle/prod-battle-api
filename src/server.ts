@@ -33,8 +33,7 @@ app.doc('/openapi.json', {
   },
   servers: [
     { url: 'http://localhost:8080', description: 'local' },
-    { url: 'https://api.staging.producer-battle.app', description: 'staging' },
-    { url: 'https://api.producer-battle.app', description: 'production' },
+    { url: 'https://api.prodbattle.com', description: 'prod' },
   ],
 });
 

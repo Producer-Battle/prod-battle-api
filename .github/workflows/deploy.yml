@@ -3,43 +3,34 @@ name: deploy
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
 
 env:
-  REGISTRY: rg.fr-par.scw.cloud/prod-battle-staging-registry
+  REGISTRY: rg.fr-par.scw.cloud/prod-battle-registry
   IMAGE_NAME: prod-battle-api
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # Determine the environment and image tags for downstream jobs.
+  # Compute the image tag set. Every push to main gets:
+  #   - <short-sha>   (immutable, used for rollbacks + the container PATCH)
+  #   - latest        (floating, used by tofu as the bootstrap image tag)
   # ─────────────────────────────────────────────────────────────────────────────
   meta:
     runs-on: ubuntu-latest
     outputs:
-      env: ${{ steps.tag.outputs.env }}
       primary_tag: ${{ steps.tag.outputs.primary_tag }}
       secondary_tag: ${{ steps.tag.outputs.secondary_tag }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Compute tags
         id: tag
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "env=prod"                             >> "$GITHUB_OUTPUT"
-            echo "primary_tag=${GITHUB_REF_NAME}"      >> "$GITHUB_OUTPUT"
-            echo "secondary_tag=prod-latest"           >> "$GITHUB_OUTPUT"
-          else
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            echo "env=staging"                             >> "$GITHUB_OUTPUT"
-            echo "primary_tag=staging-${SHORT_SHA}"        >> "$GITHUB_OUTPUT"
-            echo "secondary_tag=staging-latest"            >> "$GITHUB_OUTPUT"
-          fi
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "primary_tag=${SHORT_SHA}"   >> "$GITHUB_OUTPUT"
+          echo "secondary_tag=latest"      >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Build the API image and push it to Scaleway Container Registry.
-  # Also builds the ffmpeg job image that lives in jobs/ffmpeg/.
+  # Build the API image and push it to Scaleway Container Registry. Also
+  # builds the ffmpeg job image that lives in jobs/ffmpeg/.
   # ─────────────────────────────────────────────────────────────────────────────
   build:
     needs: meta
@@ -87,8 +78,8 @@ jobs:
   # expected to be forward-compatible (additive columns / tables, no drops
   # the old image still references) so the currently-live old image keeps
   # working until the redeploy completes. If migrate fails, we abort: the
-  # container stays on the previous image and DB schema, the image tag we
-  # just built sits in the registry unused.
+  # container stays on the previous image and schema, the image tag we just
+  # built sits in the registry unused.
   # ─────────────────────────────────────────────────────────────────────────────
   migrate:
     needs: [meta, build]
@@ -107,44 +98,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Run Drizzle migrations (staging)
-        if: needs.meta.outputs.env == 'staging'
+      - name: Run Drizzle migrations
         env:
-          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [[ -z "$DATABASE_URL" ]]; then
-            echo "STAGING_DATABASE_URL secret not set — cannot migrate staging DB."
-            exit 1
-          fi
-          pnpm db:migrate
-
-      - name: Run Drizzle migrations (prod)
-        if: needs.meta.outputs.env == 'prod'
-        env:
-          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-        run: |
-          if [[ -z "$DATABASE_URL" ]]; then
-            echo "PROD_DATABASE_URL not set — skipping prod migration."
-            echo "Set this secret once the prod RDB has been provisioned."
+            echo "DATABASE_URL secret not set — skipping migrate (bootstrap)."
             exit 0
           fi
           pnpm db:migrate
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Roll the Scaleway Serverless Container to the freshly-pushed SHA-tagged
-  # image. We PATCH `registry_image` with the immutable staging-<sha> (or
-  # the release tag on prod) so the container config always reflects exactly
-  # which commit is live and rollback is just "PATCH back to a previous SHA".
+  # image. We PATCH `registry_image` with the immutable <sha> tag so the
+  # container config always reflects exactly which commit is live and a
+  # rollback is just "PATCH back to a previous SHA".
   #
   # The tofu module sets `lifecycle.ignore_changes = [registry_image]` on
-  # the container resource so the next `tofu apply` doesn't fight CI by
-  # resetting the image back to the literal tag in envs/*/main.tf.
-  #
-  # Before PATCHing we capture the currently-live registry_image into the
-  # job output so the rollback step can pin back to it if the new image
-  # fails to become ready.
-  #
-  # Prod deploy is skipped if SCW_CONTAINER_ID_PROD is not yet configured.
+  # the container so the next `tofu apply` doesn't fight CI by resetting
+  # the image back to the tag literal in envs/prod/main.tf.
   # ─────────────────────────────────────────────────────────────────────────────
   redeploy:
     needs: [meta, build, migrate]
@@ -157,25 +129,18 @@ jobs:
       # Job-level `env` can reference neither `secrets.*` nor `env.*`, so we
       # compute the container ID and the full image ref here and expose them
       # as step outputs for the later steps (roll, wait, smoke-test, rollback).
-      - name: Pick container ID + image for ${{ needs.meta.outputs.env }}
+      - name: Pick container ID + image
         id: guard
         env:
-          CONTAINER_ID_STAGING: ${{ secrets.SCW_CONTAINER_ID_STAGING }}
-          CONTAINER_ID_PROD: ${{ secrets.SCW_CONTAINER_ID_PROD }}
-          TARGET_ENV: ${{ needs.meta.outputs.env }}
+          CONTAINER_ID: ${{ secrets.SCW_CONTAINER_ID }}
           PRIMARY_TAG: ${{ needs.meta.outputs.primary_tag }}
         run: |
-          if [[ "$TARGET_ENV" == "prod" ]]; then
-            CID="$CONTAINER_ID_PROD"
-          else
-            CID="$CONTAINER_ID_STAGING"
-          fi
-          if [[ -z "$CID" ]]; then
-            echo "No container ID configured for ${TARGET_ENV} - skipping."
+          if [[ -z "$CONTAINER_ID" ]]; then
+            echo "SCW_CONTAINER_ID secret not set — skipping redeploy."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "container_id=${CID}" >> "$GITHUB_OUTPUT"
+            echo "container_id=${CONTAINER_ID}" >> "$GITHUB_OUTPUT"
             echo "full_image=${REGISTRY}/${IMAGE_NAME}:${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -286,38 +251,3 @@ jobs:
           cat /tmp/rollback.json
           echo ""
           echo "::warning::Rollback PATCH sent. Investigate the failing image (${FULL_IMAGE}) before the next deploy."
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Publish the OpenAPI spec as an npm package to GitHub Packages.
-  # Only runs on prod releases, not on every push to main — the spec is already
-  # uploaded as a CI artifact on every PR/push via ci.yml.
-  # ─────────────────────────────────────────────────────────────────────────────
-  publish-openapi:
-    needs: [meta, build, redeploy]
-    if: needs.meta.outputs.env == 'prod'
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Generate OpenAPI spec
-        run: pnpm openapi:emit
-
-      - name: Publish OpenAPI npm package
-        env:
-          NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/publish-openapi.sh
