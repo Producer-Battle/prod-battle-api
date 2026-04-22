@@ -22,6 +22,20 @@
       "when": 1776865421131,
       "tag": "0002_giant_bedlam",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776868799704,
+      "tag": "0003_omniscient_triathlon",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776871110853,
+      "tag": "0004_perpetual_firebird",
+      "breakpoints": true
     }
   ]
 }

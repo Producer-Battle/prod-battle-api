@@ -7,62 +7,67 @@ on:
     types: [published]
 
 env:
-  # TODO: replace with your registry URL from prod-battle-infra `module.registry.endpoint`
-  REGISTRY: rg.fr-par.scw.cloud/prod-battle
+  REGISTRY: rg.fr-par.scw.cloud/prod-battle-staging-registry
   IMAGE_NAME: prod-battle-api
 
 jobs:
-  build-and-deploy:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Determine the environment and image tags for downstream jobs.
+  # ─────────────────────────────────────────────────────────────────────────────
+  meta:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      env: ${{ steps.tag.outputs.env }}
+      primary_tag: ${{ steps.tag.outputs.primary_tag }}
+      secondary_tag: ${{ steps.tag.outputs.secondary_tag }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm openapi:emit
 
-      - name: Publish OpenAPI npm package
-        env:
-          NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/publish-openapi.sh
+      - name: Compute tags
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "env=prod"                             >> "$GITHUB_OUTPUT"
+            echo "primary_tag=${GITHUB_REF_NAME}"      >> "$GITHUB_OUTPUT"
+            echo "secondary_tag=prod-latest"           >> "$GITHUB_OUTPUT"
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            echo "env=staging"                             >> "$GITHUB_OUTPUT"
+            echo "primary_tag=staging-${SHORT_SHA}"        >> "$GITHUB_OUTPUT"
+            echo "secondary_tag=staging-latest"            >> "$GITHUB_OUTPUT"
+          fi
 
-      - uses: docker/setup-buildx-action@v3
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Build the API image and push it to Scaleway Container Registry.
+  # Also builds the ffmpeg job image that lives in jobs/ffmpeg/.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Scaleway Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.SCW_REGISTRY_USER }}
-          password: ${{ secrets.SCW_REGISTRY_PASSWORD }}
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
 
-      - name: Compute tag
-        id: tag
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "env=prod" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=main-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-            echo "env=staging" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build and push
+      - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.env }}-latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -72,9 +77,99 @@ jobs:
           context: ./jobs/ffmpeg
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ steps.tag.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ steps.tag.outputs.env }}-latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.primary_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.secondary_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # TODO: redeploy Serverless Container so it pulls the new image.
-      # Scaleway API call: PATCH /containers/v1beta1/regions/{region}/containers/{id}
-      # Or use the `scaleway/action-scw` CLI once a maintained version exists.
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Trigger a Scaleway Serverless Container redeploy so it pulls the new image.
+  # Uses PATCH /containers/v1beta1/regions/fr-par/containers/{id}
+  # with {"redeploy": true}.
+  #
+  # Prod redeploy is skipped if SCW_CONTAINER_ID_PROD is not yet configured
+  # (i.e. when prod infrastructure has not been provisioned yet).
+  # ─────────────────────────────────────────────────────────────────────────────
+  redeploy:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SCW_API_BASE: https://api.scaleway.com/containers/v1beta1/regions/fr-par/containers
+    steps:
+      - name: Redeploy staging container
+        if: needs.meta.outputs.env == 'staging'
+        run: |
+          echo "Triggering redeploy of staging container (ID: ${{ secrets.SCW_CONTAINER_ID_STAGING }})..."
+          HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
+            --request PATCH \
+            --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
+            --header "Content-Type: application/json" \
+            --data '{"redeploy": true}' \
+            "${{ env.SCW_API_BASE }}/${{ secrets.SCW_CONTAINER_ID_STAGING }}")
+          echo "HTTP status: ${HTTP_STATUS}"
+          cat /tmp/scw_response.json
+          if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
+            echo "Scaleway redeploy API returned non-2xx status: ${HTTP_STATUS}"
+            exit 1
+          fi
+          echo "Staging redeploy triggered successfully."
+
+      - name: Redeploy prod container
+        if: needs.meta.outputs.env == 'prod'
+        run: |
+          if [[ -z "${{ secrets.SCW_CONTAINER_ID_PROD }}" ]]; then
+            echo "SCW_CONTAINER_ID_PROD is not set — skipping prod redeploy."
+            echo "Set this secret once the prod Scaleway container has been provisioned."
+            exit 0
+          fi
+          echo "Triggering redeploy of prod container (ID: ${{ secrets.SCW_CONTAINER_ID_PROD }})..."
+          HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
+            --request PATCH \
+            --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
+            --header "Content-Type: application/json" \
+            --data '{"redeploy": true}' \
+            "${{ env.SCW_API_BASE }}/${{ secrets.SCW_CONTAINER_ID_PROD }}")
+          echo "HTTP status: ${HTTP_STATUS}"
+          cat /tmp/scw_response.json
+          if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
+            echo "Scaleway redeploy API returned non-2xx status: ${HTTP_STATUS}"
+            exit 1
+          fi
+          echo "Prod redeploy triggered successfully."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Publish the OpenAPI spec as an npm package to GitHub Packages.
+  # Only runs on prod releases, not on every push to main — the spec is already
+  # uploaded as a CI artifact on every PR/push via ci.yml.
+  # ─────────────────────────────────────────────────────────────────────────────
+  publish-openapi:
+    needs: [meta, build]
+    if: needs.meta.outputs.env == 'prod'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate OpenAPI spec
+        run: pnpm openapi:emit
+
+      - name: Publish OpenAPI npm package
+        env:
+          NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/publish-openapi.sh

@@ -1,8 +1,11 @@
 import { serve } from '@hono/node-server';
+import type { ServerType } from '@hono/node-server';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { cors } from 'hono/cors';
 import { env } from './env.js';
+import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
+import { attachWebSocket } from './ws/index.js';
 
 const app = new OpenAPIHono();
 
@@ -13,7 +16,8 @@ const allowedOrigins = (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
 app.use(
   '*',
   cors({
-    origin: (origin) => (allowedOrigins.length === 0 || allowedOrigins.includes(origin) ? origin : null),
+    origin: (origin) =>
+      allowedOrigins.length === 0 || allowedOrigins.includes(origin) ? origin : null,
     credentials: true,
   }),
 );
@@ -34,7 +38,7 @@ app.doc('/openapi.json', {
   ],
 });
 
-const server = serve(
+const server: ServerType = serve(
   {
     fetch: app.fetch,
     port: env.PORT,
@@ -44,11 +48,14 @@ const server = serve(
   },
 );
 
-// TODO: wire WebSocket upgrades from ./ws/index.ts onto `server`
-// TODO: start ./realtime/tick.ts leader loop
+// Wire WebSocket upgrades and start the tick loop.
+// Cast to the Node.js http.Server so ws can hook the 'upgrade' event.
+attachWebSocket(server as unknown as import('node:http').Server);
+const stopTick = startTickLoop();
 
 const shutdown = (signal: string) => {
   console.log(`[prod-battle-api] ${signal} received, draining…`);
+  stopTick();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 };

@@ -1,8 +1,9 @@
-// Seeds the local dev DB with system genres, demo producers, and a finished
-// match + submissions so the /feed + /genres endpoints have content to return.
+// Seeds the local dev DB with system genres, demo producers, a finished
+// match + submissions so the /feed + /genres endpoints have content to return,
+// and pool sample packs for all MVP genres (via seed-stems logic).
 // Idempotent — running twice is safe (ON CONFLICT DO NOTHING on slugs).
 
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../src/db/client.js';
 import {
   genres,
@@ -10,10 +11,59 @@ import {
   matchTeams,
   matches,
   producerProfiles,
+  samplePacks,
   submissions,
   users,
 } from '../src/db/schema.js';
 import { MVP_SYSTEM_GENRES } from '../src/genres/registry.js';
+import { GENRE_STEMS } from '../src/matchmaking/defaults.js';
+
+const MINIO_BASE = 'http://localhost:9002/audio/stems';
+const STEMS_PER_TYPE = 4;
+const PACKS_PER_GENRE = 3;
+
+async function seedStems(d: ReturnType<typeof db>) {
+  const genreRows = await d.select().from(genres);
+  const genreBySlug = Object.fromEntries(genreRows.map((r) => [r.slug, r]));
+
+  for (const [genreSlug, stemTypes] of Object.entries(GENRE_STEMS)) {
+    const genre = genreBySlug[genreSlug];
+    if (!genre) continue;
+
+    const existingPacks = await d
+      .select({ id: samplePacks.id, kind: samplePacks.kind })
+      .from(samplePacks)
+      .where(eq(samplePacks.genreId, genre.id));
+
+    const poolCount = existingPacks.filter((r) => r.kind === 'pool').length;
+    if (poolCount > 0) {
+      console.log(`[seed] pool stems for "${genreSlug}" already exist — skipping`);
+      continue;
+    }
+
+    console.log(`[seed] seeding pool stems for "${genreSlug}"…`);
+    for (let packIdx = 0; packIdx < PACKS_PER_GENRE; packIdx++) {
+      const packLabel = String.fromCharCode(65 + packIdx);
+      const baseIndex = packIdx * STEMS_PER_TYPE + 1;
+      const samples = stemTypes.flatMap((stemType) =>
+        Array.from({ length: STEMS_PER_TYPE }, (_, i) => {
+          const n = String(baseIndex + i).padStart(2, '0');
+          return {
+            stemType,
+            name: `${genreSlug}-${stemType}-${n}`,
+            url: `${MINIO_BASE}/${genreSlug}/${stemType}-${n}.wav`,
+          };
+        }),
+      );
+      await d.insert(samplePacks).values({
+        genreId: genre.id,
+        kind: 'pool',
+        name: `${genreSlug}-pool-${packLabel}`,
+        samples,
+      });
+    }
+  }
+}
 
 async function main() {
   const d = db();
@@ -212,6 +262,10 @@ async function main() {
       isPublic: true,
     },
   ]);
+
+  // Seed pool sample packs if they are missing.
+  console.log('[seed] pool sample packs…');
+  await seedStems(d);
 
   console.log('[seed] done.');
   process.exit(0);

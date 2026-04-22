@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   integer,
@@ -43,13 +44,7 @@ export const matchStatus = pgEnum('match_status', [
   'cancelled',
 ]);
 
-export const matchPhase = pgEnum('match_phase', [
-  'lobby',
-  'submit',
-  'reveal',
-  'vote',
-  'results',
-]);
+export const matchPhase = pgEnum('match_phase', ['lobby', 'submit', 'reveal', 'vote', 'results']);
 
 export const samplePackKind = pgEnum('sample_pack_kind', ['uploaded', 'generated', 'pool']);
 
@@ -134,7 +129,7 @@ export const genres = pgTable(
     slug: text().notNull(),
     name: text().notNull(),
     kind: genreKind().notNull(),
-    parentId: uuid().references((): any => genres.id, { onDelete: 'set null' }),
+    parentId: uuid().references((): AnyPgColumn => genres.id, { onDelete: 'set null' }),
     formatConfig: jsonb().$type<GenreFormatConfig | null>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     status: genreStatus().notNull().default('active'),
@@ -171,6 +166,9 @@ export const samplePacks = pgTable('sample_packs', {
   name: text().notNull(),
   createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
   samples: jsonb().$type<SamplePackItem[]>().notNull(),
+  // Pre-built ZIP of every stem in this pack. Populated at seed time for
+  // kind='pool' packs; null for legacy rows or kind='uploaded' awaiting a zip.
+  zipUrl: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -264,6 +262,7 @@ export const matchPlayers = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     teamId: uuid().references(() => matchTeams.id, { onDelete: 'set null' }),
     isSpectator: boolean().notNull().default(false),
+    ready: boolean().notNull().default(false),
     finalRank: integer(),
     joinedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },

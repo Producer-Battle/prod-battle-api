@@ -1,6 +1,6 @@
 {
-  "id": "e89f1d3f-76d2-4983-8515-7f93fd6c2119",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "65c8b40d-6310-4285-b78e-66a3a110fcc9",
+  "prevId": "217c7292-f2db-472c-a8c1-57d1eb42dac3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -59,8 +59,12 @@
           "name": "admin_actions_admin_id_users_id_fk",
           "tableFrom": "admin_actions",
           "tableTo": "users",
-          "columnsFrom": ["admin_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "admin_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -140,8 +144,12 @@
           "name": "ar_applications_user_id_users_id_fk",
           "tableFrom": "ar_applications",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -149,8 +157,12 @@
           "name": "ar_applications_reviewer_id_users_id_fk",
           "tableFrom": "ar_applications",
           "tableTo": "users",
-          "columnsFrom": ["reviewer_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "reviewer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -197,8 +209,12 @@
           "name": "ar_watchlist_ar_user_id_users_id_fk",
           "tableFrom": "ar_watchlist",
           "tableTo": "users",
-          "columnsFrom": ["ar_user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "ar_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -206,8 +222,12 @@
           "name": "ar_watchlist_producer_id_users_id_fk",
           "tableFrom": "ar_watchlist",
           "tableTo": "users",
-          "columnsFrom": ["producer_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "producer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -215,7 +235,10 @@
       "compositePrimaryKeys": {
         "ar_watchlist_ar_user_id_producer_id_pk": {
           "name": "ar_watchlist_ar_user_id_producer_id_pk",
-          "columns": ["ar_user_id", "producer_id"]
+          "columns": [
+            "ar_user_id",
+            "producer_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -261,8 +284,12 @@
           "name": "battle_phases_match_id_matches_id_fk",
           "tableFrom": "battle_phases",
           "tableTo": "matches",
-          "columnsFrom": ["match_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -343,8 +370,12 @@
           "name": "follows_follower_id_users_id_fk",
           "tableFrom": "follows",
           "tableTo": "users",
-          "columnsFrom": ["follower_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "follower_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -352,8 +383,12 @@
           "name": "follows_followed_id_users_id_fk",
           "tableFrom": "follows",
           "tableTo": "users",
-          "columnsFrom": ["followed_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "followed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -361,7 +396,10 @@
       "compositePrimaryKeys": {
         "follows_follower_id_followed_id_pk": {
           "name": "follows_follower_id_followed_id_pk",
-          "columns": ["follower_id", "followed_id"]
+          "columns": [
+            "follower_id",
+            "followed_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -455,8 +493,12 @@
           "name": "genres_parent_id_genres_id_fk",
           "tableFrom": "genres",
           "tableTo": "genres",
-          "columnsFrom": ["parent_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "parent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -464,8 +506,12 @@
           "name": "genres_created_by_users_id_fk",
           "tableFrom": "genres",
           "tableTo": "users",
-          "columnsFrom": ["created_by"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -505,6 +551,13 @@
           "notNull": true,
           "default": false
         },
+        "ready": {
+          "name": "ready",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "final_rank": {
           "name": "final_rank",
           "type": "integer",
@@ -525,8 +578,12 @@
           "name": "match_players_match_id_matches_id_fk",
           "tableFrom": "match_players",
           "tableTo": "matches",
-          "columnsFrom": ["match_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -534,8 +591,12 @@
           "name": "match_players_user_id_users_id_fk",
           "tableFrom": "match_players",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -543,8 +604,12 @@
           "name": "match_players_team_id_match_teams_id_fk",
           "tableFrom": "match_players",
           "tableTo": "match_teams",
-          "columnsFrom": ["team_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -552,7 +617,10 @@
       "compositePrimaryKeys": {
         "match_players_match_id_user_id_pk": {
           "name": "match_players_match_id_user_id_pk",
-          "columns": ["match_id", "user_id"]
+          "columns": [
+            "match_id",
+            "user_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -602,8 +670,12 @@
           "name": "match_teams_match_id_matches_id_fk",
           "tableFrom": "match_teams",
           "tableTo": "matches",
-          "columnsFrom": ["match_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -683,6 +755,20 @@
           "primaryKey": false,
           "notNull": false
         },
+        "sample_mode": {
+          "name": "sample_mode",
+          "type": "sample_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'none'"
+        },
+        "sample_pack_id": {
+          "name": "sample_pack_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -725,8 +811,12 @@
           "name": "matches_host_id_users_id_fk",
           "tableFrom": "matches",
           "tableTo": "users",
-          "columnsFrom": ["host_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -734,9 +824,26 @@
           "name": "matches_primary_genre_id_genres_id_fk",
           "tableFrom": "matches",
           "tableTo": "genres",
-          "columnsFrom": ["primary_genre_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "primary_genre_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "matches_sample_pack_id_sample_packs_id_fk": {
+          "name": "matches_sample_pack_id_sample_packs_id_fk",
+          "tableFrom": "matches",
+          "tableTo": "sample_packs",
+          "columnsFrom": [
+            "sample_pack_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -746,15 +853,15 @@
       "checkConstraints": {
         "matches_team_size_range": {
           "name": "matches_team_size_range",
-          "value": "\"matches\".\"team_size\" between 1 and 4"
+          "value": "\"matches\".\"team_size\" between 1 and 5"
         },
         "matches_team_count_range": {
           "name": "matches_team_count_range",
-          "value": "\"matches\".\"team_count\" between 2 and 8"
+          "value": "\"matches\".\"team_count\" between 1 and 8"
         },
-        "matches_total_players_max_8": {
-          "name": "matches_total_players_max_8",
-          "value": "\"matches\".\"team_size\" * \"matches\".\"team_count\" <= 8"
+        "matches_total_players_max_10": {
+          "name": "matches_total_players_max_10",
+          "value": "\"matches\".\"team_size\" * \"matches\".\"team_count\" <= 10"
         },
         "matches_submit_seconds_range": {
           "name": "matches_submit_seconds_range",
@@ -812,8 +919,12 @@
           "name": "messages_sender_id_users_id_fk",
           "tableFrom": "messages",
           "tableTo": "users",
-          "columnsFrom": ["sender_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "sender_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -821,8 +932,12 @@
           "name": "messages_recipient_id_users_id_fk",
           "tableFrom": "messages",
           "tableTo": "users",
-          "columnsFrom": ["recipient_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "recipient_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -876,8 +991,12 @@
           "name": "producer_profiles_user_id_users_id_fk",
           "tableFrom": "producer_profiles",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -952,8 +1071,12 @@
           "name": "rankings_user_id_users_id_fk",
           "tableFrom": "rankings",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -961,8 +1084,12 @@
           "name": "rankings_genre_id_genres_id_fk",
           "tableFrom": "rankings",
           "tableTo": "genres",
-          "columnsFrom": ["genre_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "genre_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -970,8 +1097,12 @@
           "name": "rankings_season_id_seasons_id_fk",
           "tableFrom": "rankings",
           "tableTo": "seasons",
-          "columnsFrom": ["season_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "season_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -979,9 +1110,98 @@
       "compositePrimaryKeys": {
         "rankings_user_id_genre_id_season_id_pk": {
           "name": "rankings_user_id_genre_id_season_id_pk",
-          "columns": ["user_id", "genre_id", "season_id"]
+          "columns": [
+            "user_id",
+            "genre_id",
+            "season_id"
+          ]
         }
       },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sample_packs": {
+      "name": "sample_packs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "genre_id": {
+          "name": "genre_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "sample_pack_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "samples": {
+          "name": "samples",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "sample_packs_genre_id_genres_id_fk": {
+          "name": "sample_packs_genre_id_genres_id_fk",
+          "tableFrom": "sample_packs",
+          "tableTo": "genres",
+          "columnsFrom": [
+            "genre_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sample_packs_created_by_users_id_fk": {
+          "name": "sample_packs_created_by_users_id_fk",
+          "tableFrom": "sample_packs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -1071,8 +1291,12 @@
           "name": "submission_likes_submission_id_submissions_id_fk",
           "tableFrom": "submission_likes",
           "tableTo": "submissions",
-          "columnsFrom": ["submission_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "submission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1080,8 +1304,12 @@
           "name": "submission_likes_user_id_users_id_fk",
           "tableFrom": "submission_likes",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1089,7 +1317,10 @@
       "compositePrimaryKeys": {
         "submission_likes_submission_id_user_id_pk": {
           "name": "submission_likes_submission_id_user_id_pk",
-          "columns": ["submission_id", "user_id"]
+          "columns": [
+            "submission_id",
+            "user_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1120,8 +1351,12 @@
           "name": "submission_tags_submission_id_submissions_id_fk",
           "tableFrom": "submission_tags",
           "tableTo": "submissions",
-          "columnsFrom": ["submission_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "submission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1129,8 +1364,12 @@
           "name": "submission_tags_genre_id_genres_id_fk",
           "tableFrom": "submission_tags",
           "tableTo": "genres",
-          "columnsFrom": ["genre_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "genre_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1138,7 +1377,10 @@
       "compositePrimaryKeys": {
         "submission_tags_submission_id_genre_id_pk": {
           "name": "submission_tags_submission_id_genre_id_pk",
-          "columns": ["submission_id", "genre_id"]
+          "columns": [
+            "submission_id",
+            "genre_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1253,8 +1495,12 @@
           "name": "submissions_match_id_matches_id_fk",
           "tableFrom": "submissions",
           "tableTo": "matches",
-          "columnsFrom": ["match_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1262,8 +1508,12 @@
           "name": "submissions_user_id_users_id_fk",
           "tableFrom": "submissions",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1271,8 +1521,12 @@
           "name": "submissions_genre_id_genres_id_fk",
           "tableFrom": "submissions",
           "tableTo": "genres",
-          "columnsFrom": ["genre_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "genre_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -1417,8 +1671,12 @@
           "name": "votes_match_id_matches_id_fk",
           "tableFrom": "votes",
           "tableTo": "matches",
-          "columnsFrom": ["match_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "match_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1426,8 +1684,12 @@
           "name": "votes_voter_id_users_id_fk",
           "tableFrom": "votes",
           "tableTo": "users",
-          "columnsFrom": ["voter_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "voter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1435,8 +1697,12 @@
           "name": "votes_submission_id_submissions_id_fk",
           "tableFrom": "votes",
           "tableTo": "submissions",
-          "columnsFrom": ["submission_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "submission_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1444,7 +1710,11 @@
       "compositePrimaryKeys": {
         "votes_match_id_voter_id_submission_id_pk": {
           "name": "votes_match_id_voter_id_submission_id_pk",
-          "columns": ["match_id", "voter_id", "submission_id"]
+          "columns": [
+            "match_id",
+            "voter_id",
+            "submission_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1457,37 +1727,89 @@
     "public.ar_status": {
       "name": "ar_status",
       "schema": "public",
-      "values": ["pending", "approved", "rejected"]
+      "values": [
+        "pending",
+        "approved",
+        "rejected"
+      ]
     },
     "public.genre_kind": {
       "name": "genre_kind",
       "schema": "public",
-      "values": ["system", "user"]
+      "values": [
+        "system",
+        "user"
+      ]
     },
     "public.genre_status": {
       "name": "genre_status",
       "schema": "public",
-      "values": ["active", "archived", "proposed"]
+      "values": [
+        "active",
+        "archived",
+        "proposed"
+      ]
     },
     "public.match_mode": {
       "name": "match_mode",
       "schema": "public",
-      "values": ["quickplay", "ranked", "private", "tournament", "practice"]
+      "values": [
+        "quickplay",
+        "ranked",
+        "private",
+        "tournament",
+        "practice"
+      ]
     },
     "public.match_phase": {
       "name": "match_phase",
       "schema": "public",
-      "values": ["lobby", "submit", "reveal", "vote", "results"]
+      "values": [
+        "lobby",
+        "submit",
+        "reveal",
+        "vote",
+        "results"
+      ]
     },
     "public.match_status": {
       "name": "match_status",
       "schema": "public",
-      "values": ["lobby", "submit", "reveal", "vote", "results", "cancelled"]
+      "values": [
+        "lobby",
+        "submit",
+        "reveal",
+        "vote",
+        "results",
+        "cancelled"
+      ]
+    },
+    "public.sample_mode": {
+      "name": "sample_mode",
+      "schema": "public",
+      "values": [
+        "none",
+        "generated",
+        "uploaded"
+      ]
+    },
+    "public.sample_pack_kind": {
+      "name": "sample_pack_kind",
+      "schema": "public",
+      "values": [
+        "uploaded",
+        "generated",
+        "pool"
+      ]
     },
     "public.user_role": {
       "name": "user_role",
       "schema": "public",
-      "values": ["producer", "ar", "admin"]
+      "values": [
+        "producer",
+        "ar",
+        "admin"
+      ]
     }
   },
   "schemas": {},

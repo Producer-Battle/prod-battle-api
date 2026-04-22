@@ -1,8 +1,10 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { genres, matchPlayers, matchTeams, matches } from '../db/schema.js';
+import { genres, matchPlayers, matchTeams, matches, samplePacks } from '../db/schema.js';
+import { generateMatchPack } from '../genres/generate.js';
 import {
+  DEFAULT_SAMPLE_MODE,
   PRIVATE_SUBMIT_SECONDS_PRESETS,
   SUBMIT_SECONDS_DEFAULT,
 } from '../matchmaking/defaults.js';
@@ -11,6 +13,19 @@ export const matchesRoutes = new OpenAPIHono();
 
 const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice'] as const;
 const PRIVATE_PRESETS = PRIVATE_SUBMIT_SECONDS_PRESETS as unknown as [number, ...number[]];
+
+const SamplePackItemSchema = z.object({
+  stemType: z.string(),
+  name: z.string(),
+  url: z.string(),
+});
+
+const SamplePackSchema = z
+  .object({
+    id: z.string().uuid(),
+    samples: z.array(SamplePackItemSchema),
+  })
+  .openapi('SamplePack');
 
 const CreateMatchBody = z
   .object({
@@ -34,8 +49,12 @@ const CreateMatchBody = z
     message: 'practice mode is solo (teamCount must be 1)',
   })
   .refine(
-    (v) => v.mode !== 'private' || (v.submitSeconds != null && (PRIVATE_PRESETS as readonly number[]).includes(v.submitSeconds)),
-    { message: `Private rooms require submitSeconds ∈ ${JSON.stringify(PRIVATE_SUBMIT_SECONDS_PRESETS)}` },
+    (v) =>
+      v.mode !== 'private' ||
+      (v.submitSeconds != null && (PRIVATE_PRESETS as readonly number[]).includes(v.submitSeconds)),
+    {
+      message: `Private rooms require submitSeconds ∈ ${JSON.stringify(PRIVATE_SUBMIT_SECONDS_PRESETS)}`,
+    },
   )
   .openapi('CreateMatchBody');
 
@@ -50,6 +69,7 @@ const MatchResponse = z
     genre: z.object({ slug: z.string(), name: z.string() }),
     status: z.string(),
     createdAt: z.string(),
+    samplePack: SamplePackSchema.nullable().optional(),
   })
   .openapi('Match');
 
@@ -91,8 +111,10 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     return c.json({ error: `${body.mode} requires a system genre` }, 400);
   }
 
-  const submitSeconds =
-    body.submitSeconds ?? SUBMIT_SECONDS_DEFAULT[body.mode];
+  const submitSeconds = body.submitSeconds ?? SUBMIT_SECONDS_DEFAULT[body.mode];
+
+  // Determine sample mode: follow the per-mode default.
+  const sampleMode = DEFAULT_SAMPLE_MODE[body.mode];
 
   // Find a free room code. Unique constraint will reject collisions; retry a few times.
   let created: typeof matches.$inferSelect | undefined;
@@ -109,6 +131,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           teamCount: body.teamCount,
           primaryGenreId: genre.id,
           submitSeconds,
+          sampleMode,
         })
         .returning();
       created = row;
@@ -127,26 +150,48 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   }
   if (!created) return c.json({ error: 'could not allocate room code' }, 500);
 
+  // Narrow into a stable local so TypeScript/closures don't lose the guard.
+  const match = created;
+
   // Seat the teams in advance so WS joiners have slots to map to.
   await d.insert(matchTeams).values(
     Array.from({ length: body.teamCount }, (_, seat) => ({
-      matchId: created!.id,
+      matchId: match.id,
       seat,
       name: String.fromCharCode(65 + seat),
     })),
   );
 
+  // Generate a sample pack when the mode requires one.
+  let generatedPack: {
+    id: string;
+    samples: { stemType: string; name: string; url: string }[];
+  } | null = null;
+  if (sampleMode === 'generated') {
+    try {
+      const pack = await generateMatchPack(match.id, body.genreSlug);
+      // Link the pack back to the match.
+      await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
+      generatedPack = { id: pack.id, samples: pack.samples };
+    } catch (err) {
+      // Pool not seeded yet is a non-fatal condition during local dev — log
+      // a warning and continue so the match is still created.
+      console.warn('[matches] sample pack generation skipped:', (err as Error).message);
+    }
+  }
+
   return c.json(
     {
-      id: created.id,
-      mode: created.mode,
-      roomCode: created.roomCode!,
-      teamSize: created.teamSize,
-      teamCount: created.teamCount,
+      id: match.id,
+      mode: match.mode,
+      roomCode: match.roomCode ?? '',
+      teamSize: match.teamSize,
+      teamCount: match.teamCount,
       submitSeconds,
       genre: { slug: genre.slug, name: genre.name },
-      status: created.status,
-      createdAt: created.createdAt.toISOString(),
+      status: match.status,
+      createdAt: match.createdAt.toISOString(),
+      samplePack: generatedPack,
     },
     201,
   );
@@ -184,6 +229,8 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       createdAt: matches.createdAt,
       genreSlug: genres.slug,
       genreName: genres.name,
+      samplePackId: matches.samplePackId,
+      sampleMode: matches.sampleMode,
     })
     .from(matches)
     .innerJoin(genres, eq(genres.id, matches.primaryGenreId))
@@ -191,6 +238,23 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     .limit(1);
 
   if (!row || !row.roomCode) return c.json({ error: 'not found' }, 404);
+
+  // Load the associated sample pack if present.
+  let packPayload: {
+    id: string;
+    samples: { stemType: string; name: string; url: string }[];
+  } | null = null;
+  if (row.samplePackId) {
+    const [pack] = await d
+      .select()
+      .from(samplePacks)
+      .where(eq(samplePacks.id, row.samplePackId))
+      .limit(1);
+    if (pack) {
+      packPayload = { id: pack.id, samples: pack.samples };
+    }
+  }
+
   return c.json({
     id: row.id,
     mode: row.mode,
@@ -201,5 +265,6 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     genre: { slug: row.genreSlug, name: row.genreName },
     status: row.status,
     createdAt: row.createdAt.toISOString(),
+    samplePack: packPayload,
   });
 });

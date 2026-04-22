@@ -1,0 +1,1 @@
+ALTER TABLE "match_players" ADD COLUMN "ready" boolean DEFAULT false NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE "sample_packs" ADD COLUMN "zip_url" text;

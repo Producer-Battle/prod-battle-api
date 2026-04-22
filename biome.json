@@ -18,5 +18,8 @@
       "semicolons": "always",
       "trailingCommas": "all"
     }
+  },
+  "files": {
+    "ignore": ["src/db/migrations/**", "dist/**", "node_modules/**"]
   }
 }

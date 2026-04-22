@@ -8,6 +8,10 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
 
   S3_ENDPOINT: z.string().url().optional(),
+  // URL base used when returning public stem/zip URLs to clients. Defaults
+  // to S3_ENDPOINT. In compose, S3_ENDPOINT=http://minio:9000 (internal)
+  // while S3_PUBLIC_ENDPOINT=http://localhost:9002 (browser-reachable).
+  S3_PUBLIC_ENDPOINT: z.string().url().optional(),
   S3_REGION: z.string().optional(),
   S3_BUCKET: z.string().optional(),
   S3_ACCESS_KEY: z.string().optional(),
@@ -21,6 +25,9 @@ const envSchema = z.object({
   AUTH_SECRET: z.string().min(32).optional(),
   AUTH_TRUSTED_ORIGINS: z.string().optional(),
   WEB_ORIGIN: z.string().url().optional(),
+
+  // Freesound.org APIv2 token — register at https://freesound.org/apiv2/apply/
+  FREESOUND_API_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
