@@ -217,7 +217,10 @@ jobs:
           CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
         run: |
           # Poll for up to 5 minutes. Scaleway transitions: pending -> ready (ok)
-          # or pending -> error (bad). Anything else (creating, locked) keeps us polling.
+          # or pending -> error (bad). Scaleway is known to flap between pending
+          # and "internal error" during the first ~10s of a PATCH — so only fail
+          # after we've seen `error` persist across 3 consecutive polls (~15s).
+          error_streak=0
           for i in $(seq 1 60); do
             BODY=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
               "${SCW_API_BASE}/${CONTAINER_ID}")
@@ -229,9 +232,14 @@ jobs:
               exit 0
             fi
             if [[ "$STATUS" == "error" ]]; then
-              echo "result=error" >> "$GITHUB_OUTPUT"
-              echo "::error::Scaleway container failed to deploy: ${ERR}"
-              exit 1
+              error_streak=$((error_streak + 1))
+              if [[ $error_streak -ge 3 ]]; then
+                echo "result=error" >> "$GITHUB_OUTPUT"
+                echo "::error::Scaleway container failed to deploy (3 consecutive errors): ${ERR}"
+                exit 1
+              fi
+            else
+              error_streak=0
             fi
             sleep 5
           done
