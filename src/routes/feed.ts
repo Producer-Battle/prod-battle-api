@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, desc, eq } from 'drizzle-orm';
+import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { genres, submissions, users } from '../db/schema.js';
 
@@ -84,13 +85,16 @@ feedRoutes.openapi(route, async (c) => {
     .orderBy(desc(submissions.createdAt))
     .limit(limit);
 
-  return c.json({
-    items: rows.map((r) => ({
+  // Sign audio URLs so they play from the private Scaleway bucket.
+  // signUrl() passes through external URLs (e.g. the SoundHelix demo
+  // tracks used for the initial seed) unchanged.
+  const items = await Promise.all(
+    rows.map(async (r) => ({
       id: r.id,
       title: r.title,
       description: r.description,
-      audioUrl: r.audioUrl,
-      waveformUrl: r.waveformUrl,
+      audioUrl: await signUrl(r.audioUrl),
+      waveformUrl: r.waveformUrl ? await signUrl(r.waveformUrl) : null,
       durationSec: r.durationSec,
       score: Number(r.score),
       plays: r.plays,
@@ -101,5 +105,6 @@ feedRoutes.openapi(route, async (c) => {
       genre: { slug: r.genreSlug, name: r.genreName },
       matchRoomCode: null,
     })),
-  });
+  );
+  return c.json({ items });
 });

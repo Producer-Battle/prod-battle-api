@@ -12,6 +12,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, eq, sql } from 'drizzle-orm';
 import { bucket, publicUrl, s3, signUrl } from '../audio/s3.js';
+import { randomSongTitle } from '../audio/title.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users } from '../db/schema.js';
 import { maybeAdvanceAfterSubmission } from '../room/transitions.js';
@@ -163,6 +164,9 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
   }
 
   const audioUrl = publicUrl(body.key);
+  // Auto-generate a title when the producer leaves it blank so the feed
+  // never shows "Untitled". Producers can rename later from their profile.
+  const title = body.title && body.title.trim().length > 0 ? body.title.trim() : randomSongTitle();
   const [row] = await d
     .insert(submissions)
     .values({
@@ -171,7 +175,7 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
       genreId: result.match.primaryGenreId,
       audioUrl,
       durationSec: body.durationSec ?? null,
-      title: body.title ?? null,
+      title,
       description: body.description ?? null,
       isPublic: true,
     })

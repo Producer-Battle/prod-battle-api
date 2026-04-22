@@ -1,13 +1,14 @@
 // Phase-specific endpoints:
+//   GET  /matches/votable        — matches currently open for voting
 //   GET  /matches/:code/reveal   — anonymized submissions for the reveal
 //   POST /rooms/:code/vote       — cast a vote per submission
 //   GET  /matches/:code/results  — final leaderboard with revealed identities
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { matchPlayers, matches, submissions, users, votes } from '../db/schema.js';
+import { matches, submissions, users, votes } from '../db/schema.js';
 import { maybeAdvanceAfterVote } from '../room/transitions.js';
 
 export const phasesRoutes = new OpenAPIHono();
@@ -121,28 +122,24 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     return c.json({ error: `match not in vote phase (status=${m.status})` }, 400);
   }
 
-  const [u] = await d.select().from(users).where(eq(users.handle, body.user)).limit(1);
-  if (!u) return c.json({ error: 'user not found' }, 404);
-
-  // Eligibility: seated in match_players OR has a submission in this match.
-  // Falling back to submissions means that if match_players got wiped (dev
-  // cleanup, connection lost mid-match, etc.) a producer who already
-  // uploaded their track can still vote.
-  const [player] = await d
-    .select()
-    .from(matchPlayers)
-    .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)))
-    .limit(1);
-  if (!player) {
-    const [sub] = await d.execute<{ id: string }>(
-      sql`SELECT id FROM submissions
-           WHERE match_id = ${m.id} AND user_id = ${u.id}
-           LIMIT 1`,
+  // Auto-create a lightweight user row so external/audience voters from
+  // the /vote page can cast a vote even if they never joined the match
+  // via WS. Self-vote is still blocked below by checking submission.user_id.
+  const existing = await d.select().from(users).where(eq(users.handle, body.user)).limit(1);
+  let u = existing[0];
+  if (!u) {
+    const inserted = await d.execute<{ id: string }>(
+      sql`INSERT INTO users (id, email, handle, role)
+            VALUES (gen_random_uuid(), ${body.user} || '@guest.local', ${body.user}, 'producer')
+            ON CONFLICT (handle) DO UPDATE SET handle = EXCLUDED.handle
+            RETURNING id`,
     );
-    if (!sub) {
-      return c.json({ error: 'not a player in this match' }, 404);
+    const row = inserted[0] as { id: string } | undefined;
+    if (row) {
+      [u] = await d.select().from(users).where(eq(users.id, row.id)).limit(1);
     }
   }
+  if (!u) return c.json({ error: 'user not found' }, 404);
 
   // Load all submissions in this match so we can enforce no-self-vote and
   // only-valid-ids.
@@ -243,6 +240,118 @@ phasesRoutes.openapi(resultsRoute, async (c) => {
       title: r.title,
       audioUrl: await signUrl(r.audio_url, 3600),
       score: Number(r.score),
+    })),
+  );
+
+  return c.json({ items });
+});
+
+// ─── GET /audience/matches ──────────────────────────────────────────────
+// Lists every match currently open for voting (reveal or vote phase) so a
+// /vote page can hand audience listeners something to score. Separate path
+// from /matches/:code to avoid Hono treating "votable" as a room code.
+
+const votableRoute = createRoute({
+  method: 'get',
+  path: '/audience/matches',
+  tags: ['phases'],
+  summary: 'Matches currently accepting votes',
+  responses: {
+    200: {
+      description: 'Votable matches (may be empty)',
+      content: {
+        'application/json': {
+          schema: z.object({
+            items: z.array(
+              z.object({
+                roomCode: z.string(),
+                phase: z.string(),
+                transitionsAt: z.number().int().nullable(),
+                genre: z.object({ slug: z.string(), name: z.string() }),
+                submissions: z.array(
+                  z.object({
+                    submissionId: z.string().uuid(),
+                    label: z.string(),
+                    audioUrl: z.string().url(),
+                    durationSec: z.number().int().nullable(),
+                  }),
+                ),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+  },
+});
+
+phasesRoutes.openapi(votableRoute, async (c) => {
+  const d = db();
+
+  const matchRows = await d.execute<{
+    match_id: string;
+    room_code: string;
+    phase: string;
+    transitions_at: string | null;
+    genre_slug: string;
+    genre_name: string;
+  }>(
+    sql`SELECT m.id AS match_id, m.room_code, m.status AS phase,
+               bp.transitions_at,
+               g.slug AS genre_slug, g.name AS genre_name
+          FROM matches m
+          JOIN genres g ON g.id = m.primary_genre_id
+          LEFT JOIN battle_phases bp ON bp.match_id = m.id
+         WHERE m.status IN ('vote', 'reveal')
+           AND m.room_code IS NOT NULL
+         ORDER BY m.started_at DESC NULLS LAST, m.created_at DESC
+         LIMIT 20`,
+  );
+
+  if (matchRows.length === 0) {
+    return c.json({ items: [] });
+  }
+
+  const matchIds = matchRows.map((r) => r.match_id);
+  const subRows = await d.execute<{
+    id: string;
+    match_id: string;
+    audio_url: string;
+    duration_sec: number | null;
+  }>(
+    sql`SELECT id, match_id, audio_url, duration_sec
+          FROM submissions
+         WHERE match_id = ANY(${matchIds})
+         ORDER BY id`,
+  );
+
+  type SubRow = {
+    id: string;
+    match_id: string;
+    audio_url: string;
+    duration_sec: number | null;
+  };
+  const subsByMatch = new Map<string, SubRow[]>();
+  for (const s of subRows) {
+    const list = subsByMatch.get(s.match_id) ?? [];
+    list.push(s as SubRow);
+    subsByMatch.set(s.match_id, list);
+  }
+
+  const items = await Promise.all(
+    matchRows.map(async (m) => ({
+      roomCode: m.room_code,
+      phase: m.phase,
+      transitionsAt: m.transitions_at ? new Date(m.transitions_at).getTime() : null,
+      genre: { slug: m.genre_slug, name: m.genre_name },
+      submissions: await Promise.all(
+        (subsByMatch.get(m.match_id) ?? []).map(async (s, i) => ({
+          submissionId: s.id,
+          label: `Entry ${String.fromCharCode(65 + i)}`,
+          audioUrl: await signUrl(s.audio_url, 3600),
+          durationSec: s.duration_sec,
+        })),
+      ),
     })),
   );
 

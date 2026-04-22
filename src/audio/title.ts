@@ -1,0 +1,23 @@
+// Random song-title generator for producers who leave the title field blank
+// on submission. The vibe is "phonk producer tags on SoundCloud" — short,
+// moody, pronounceable. Deterministic under test via the optional random fn.
+
+const ADJECTIVES = [
+  'midnight', 'drifting', 'acid', 'neon', 'velvet', 'chrome', 'fading', 'silver',
+  'smoky', 'rainy', 'static', 'haunted', 'cold', 'muted', 'reverse', 'tape',
+  'glass', 'lunar', 'wired', 'broken', 'golden', 'liquid', 'spiral', 'pulse',
+  'after', 'quiet', 'ghost', 'sacred', 'empty', 'bright',
+] as const;
+
+const NOUNS = [
+  'harbor', 'engine', 'signal', 'vortex', 'echo', 'ritual', 'temple', 'mirror',
+  'stars', 'horizon', 'fever', 'alley', 'garden', 'machine', 'ocean', 'fog',
+  'bloom', 'cathedral', 'switch', 'avenue', 'hollow', 'frost', 'static', 'pulse',
+  'nightfall', 'circuit', 'canyon', 'choir', 'dust', 'skyline', 'altar',
+] as const;
+
+export function randomSongTitle(random: () => number = Math.random): string {
+  const a = ADJECTIVES[Math.floor(random() * ADJECTIVES.length)];
+  const n = NOUNS[Math.floor(random() * NOUNS.length)];
+  return `${a} ${n}`;
+}
