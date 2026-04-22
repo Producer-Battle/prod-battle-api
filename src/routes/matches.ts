@@ -76,6 +76,10 @@ const MatchResponse = z
     status: z.string(),
     createdAt: z.string(),
     samplePack: SamplePackSchema.nullable().optional(),
+    // Phase info for client re-hydration on refresh. Present once a
+    // battle_phases row exists (i.e. match has left the lobby).
+    currentPhase: z.string().nullable(),
+    transitionsAt: z.number().int().nullable(),
   })
   .openapi('Match');
 
@@ -346,6 +350,16 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
 
   if (!row || !row.roomCode) return c.json({ error: 'not found' }, 404);
 
+  // Active battle-phase (if any) — drives the client's countdown on refresh.
+  const [phase] = await d.execute<{
+    current_phase: string;
+    transitions_at: string;
+  }>(
+    sql`SELECT current_phase, transitions_at
+          FROM battle_phases
+         WHERE match_id = ${row.id}`,
+  );
+
   // Load the associated sample pack if present.
   let packPayload: {
     id: string;
@@ -373,5 +387,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     samplePack: packPayload,
+    currentPhase: phase?.current_phase ?? null,
+    transitionsAt: phase ? new Date(phase.transitions_at).getTime() : null,
   });
 });
