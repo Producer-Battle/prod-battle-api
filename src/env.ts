@@ -4,8 +4,11 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
 
-  DATABASE_URL: z.string().url().optional(),
-  REDIS_URL: z.string().url().optional(),
+  // Connection strings, not validated as URLs: WHATWG URL parsing rejects
+  // passwords containing `#` or `%`, which the auto-generated credentials
+  // from the tofu `random_password` resource do include.
+  DATABASE_URL: z.string().optional(),
+  REDIS_URL: z.string().optional(),
 
   S3_ENDPOINT: z.string().url().optional(),
   // URL base used when returning public stem/zip URLs to clients. Defaults
