@@ -153,22 +153,36 @@ jobs:
       contents: read
     env:
       SCW_API_BASE: https://api.scaleway.com/containers/v1beta1/regions/fr-par/containers
-      CONTAINER_ID: ${{ needs.meta.outputs.env == 'prod' && secrets.SCW_CONTAINER_ID_PROD || secrets.SCW_CONTAINER_ID_STAGING }}
       FULL_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
     steps:
-      - name: Skip if no container configured
+      # Job-level `env` can't reference `secrets.*`, so we pick the right
+      # container ID here and expose it as a step output for the later
+      # steps (and for the rollback step, which must run on failure()).
+      - name: Pick container ID for ${{ needs.meta.outputs.env }}
         id: guard
+        env:
+          CONTAINER_ID_STAGING: ${{ secrets.SCW_CONTAINER_ID_STAGING }}
+          CONTAINER_ID_PROD: ${{ secrets.SCW_CONTAINER_ID_PROD }}
+          TARGET_ENV: ${{ needs.meta.outputs.env }}
         run: |
-          if [[ -z "$CONTAINER_ID" ]]; then
-            echo "No container ID configured for ${{ needs.meta.outputs.env }} — skipping."
+          if [[ "$TARGET_ENV" == "prod" ]]; then
+            CID="$CONTAINER_ID_PROD"
+          else
+            CID="$CONTAINER_ID_STAGING"
+          fi
+          if [[ -z "$CID" ]]; then
+            echo "No container ID configured for ${TARGET_ENV} - skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "container_id=${CID}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Capture current image for rollback
         if: steps.guard.outputs.skip != 'true'
         id: prev
+        env:
+          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
         run: |
           PREV=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
             "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.registry_image')
@@ -177,6 +191,8 @@ jobs:
 
       - name: Roll container to ${{ needs.meta.outputs.primary_tag }}
         if: steps.guard.outputs.skip != 'true'
+        env:
+          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
         run: |
           echo "Rolling container ${CONTAINER_ID} to: ${FULL_IMAGE}"
           HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
@@ -195,9 +211,11 @@ jobs:
       - name: Wait for container to become ready
         if: steps.guard.outputs.skip != 'true'
         id: wait
+        env:
+          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
         run: |
-          # Poll for up to 5 minutes. Scaleway transitions: pending → ready (ok)
-          # or pending → error (bad). Anything else (creating, locked) keeps us polling.
+          # Poll for up to 5 minutes. Scaleway transitions: pending -> ready (ok)
+          # or pending -> error (bad). Anything else (creating, locked) keeps us polling.
           for i in $(seq 1 60); do
             BODY=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
               "${SCW_API_BASE}/${CONTAINER_ID}")
@@ -221,6 +239,8 @@ jobs:
 
       - name: Smoke-test /health
         if: steps.wait.outputs.result == 'ready'
+        env:
+          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
         run: |
           URL=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
             "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.domain_name')
@@ -241,9 +261,11 @@ jobs:
 
       - name: Roll back to previous image on failure
         if: failure() && steps.guard.outputs.skip != 'true' && steps.prev.outputs.image != '' && steps.prev.outputs.image != 'null'
+        env:
+          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
+          PREV: ${{ steps.prev.outputs.image }}
         run: |
-          PREV="${{ steps.prev.outputs.image }}"
-          echo "::warning::Deploy failed — rolling ${CONTAINER_ID} back to ${PREV}"
+          echo "::warning::Deploy failed - rolling ${CONTAINER_ID} back to ${PREV}"
           curl -s --output /tmp/rollback.json --write-out "HTTP %{http_code}\n" \
             --request PATCH \
             --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
