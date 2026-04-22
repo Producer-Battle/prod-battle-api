@@ -124,12 +124,25 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   const [u] = await d.select().from(users).where(eq(users.handle, body.user)).limit(1);
   if (!u) return c.json({ error: 'user not found' }, 404);
 
+  // Eligibility: seated in match_players OR has a submission in this match.
+  // Falling back to submissions means that if match_players got wiped (dev
+  // cleanup, connection lost mid-match, etc.) a producer who already
+  // uploaded their track can still vote.
   const [player] = await d
     .select()
     .from(matchPlayers)
     .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)))
     .limit(1);
-  if (!player) return c.json({ error: 'not a player in this match' }, 404);
+  if (!player) {
+    const [sub] = await d.execute<{ id: string }>(
+      sql`SELECT id FROM submissions
+           WHERE match_id = ${m.id} AND user_id = ${u.id}
+           LIMIT 1`,
+    );
+    if (!sub) {
+      return c.json({ error: 'not a player in this match' }, 404);
+    }
+  }
 
   // Load all submissions in this match so we can enforce no-self-vote and
   // only-valid-ids.
