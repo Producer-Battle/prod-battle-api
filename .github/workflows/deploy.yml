@@ -153,17 +153,17 @@ jobs:
       contents: read
     env:
       SCW_API_BASE: https://api.scaleway.com/containers/v1beta1/regions/fr-par/containers
-      FULL_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
     steps:
-      # Job-level `env` can't reference `secrets.*`, so we pick the right
-      # container ID here and expose it as a step output for the later
-      # steps (and for the rollback step, which must run on failure()).
-      - name: Pick container ID for ${{ needs.meta.outputs.env }}
+      # Job-level `env` can reference neither `secrets.*` nor `env.*`, so we
+      # compute the container ID and the full image ref here and expose them
+      # as step outputs for the later steps (roll, wait, smoke-test, rollback).
+      - name: Pick container ID + image for ${{ needs.meta.outputs.env }}
         id: guard
         env:
           CONTAINER_ID_STAGING: ${{ secrets.SCW_CONTAINER_ID_STAGING }}
           CONTAINER_ID_PROD: ${{ secrets.SCW_CONTAINER_ID_PROD }}
           TARGET_ENV: ${{ needs.meta.outputs.env }}
+          PRIMARY_TAG: ${{ needs.meta.outputs.primary_tag }}
         run: |
           if [[ "$TARGET_ENV" == "prod" ]]; then
             CID="$CONTAINER_ID_PROD"
@@ -176,6 +176,7 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "container_id=${CID}" >> "$GITHUB_OUTPUT"
+            echo "full_image=${REGISTRY}/${IMAGE_NAME}:${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Capture current image for rollback
@@ -193,6 +194,7 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
+          FULL_IMAGE: ${{ steps.guard.outputs.full_image }}
         run: |
           echo "Rolling container ${CONTAINER_ID} to: ${FULL_IMAGE}"
           HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
@@ -264,6 +266,7 @@ jobs:
         env:
           CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
           PREV: ${{ steps.prev.outputs.image }}
+          FULL_IMAGE: ${{ steps.guard.outputs.full_image }}
         run: |
           echo "::warning::Deploy failed - rolling ${CONTAINER_ID} back to ${PREV}"
           curl -s --output /tmp/rollback.json --write-out "HTTP %{http_code}\n" \
