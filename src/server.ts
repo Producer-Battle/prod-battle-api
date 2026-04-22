@@ -1,9 +1,22 @@
 import { serve } from '@hono/node-server';
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { cors } from 'hono/cors';
 import { env } from './env.js';
 import { registerRoutes } from './routes/index.js';
 
 const app = new OpenAPIHono();
+
+const allowedOrigins = (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  '*',
+  cors({
+    origin: (origin) => (allowedOrigins.length === 0 || allowedOrigins.includes(origin) ? origin : null),
+    credentials: true,
+  }),
+);
 
 registerRoutes(app);
 

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1776864416082,
+      "tag": "0000_material_patriot",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776865281868,
+      "tag": "0001_secret_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776865421131,
+      "tag": "0002_giant_bedlam",
+      "breakpoints": true
+    }
+  ]
+}

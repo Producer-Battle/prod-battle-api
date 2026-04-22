@@ -51,6 +51,10 @@ export const matchPhase = pgEnum('match_phase', [
   'results',
 ]);
 
+export const samplePackKind = pgEnum('sample_pack_kind', ['uploaded', 'generated', 'pool']);
+
+export const sampleMode = pgEnum('sample_mode', ['none', 'generated', 'uploaded']);
+
 /*
  * Users + roles
  * ──────────────────────────────────────────────────────────────────────────
@@ -140,17 +144,54 @@ export const genres = pgTable(
 );
 
 /*
- * Matches — supports 1v1, 2v2, 3v3, 4v4 and FFA up to 8 total players.
- * Invariant: team_size * team_count <= 8 for private rooms; solo modes enforced by team_size = 1.
- *   1v1      → team_size=1, team_count=2  (players: 2)
- *   2v2      → team_size=2, team_count=2  (players: 4)
- *   3v3      → team_size=3, team_count=2  (players: 6)
- *   4v4      → team_size=4, team_count=2  (players: 8)
- *   FFA      → team_size=1, team_count=N in 3..8
+ * Sample packs — the pool of stems a match can pull from when
+ * sample_mode = 'generated' or 'uploaded'.
+ *
+ * kind='pool':     curated library we seed per genre; drawn from at quickplay time.
+ * kind='generated': created per-match by picking stems from the relevant pool.
+ * kind='uploaded':  zip uploaded by a private-room host.
+ *
+ * `samples` JSONB shape:
+ *   [{ stemType: 'kick' | 'snare' | 'hihat' | '808' | 'clap' | ..., name, url }]
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+
+export type SamplePackItem = {
+  stemType: string;
+  name: string;
+  url: string;
+};
+
+export const samplePacks = pgTable('sample_packs', {
+  id: uuid().primaryKey().defaultRandom(),
+  genreId: uuid()
+    .notNull()
+    .references(() => genres.id, { onDelete: 'cascade' }),
+  kind: samplePackKind().notNull(),
+  name: text().notNull(),
+  createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+  samples: jsonb().$type<SamplePackItem[]>().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Matches — solo practice, 1v1 duels, team battles up to 5v5, FFA up to 8.
+ * Invariant: team_size * team_count <= 10.
+ *   Practice → team_size=1, team_count=1   (solo)
+ *   1v1      → team_size=1, team_count=2   (2 players)
+ *   2v2      → team_size=2, team_count=2   (4 players)
+ *   …up to 5v5 → team_size=5, team_count=2 (10 players)
+ *   FFA      → team_size=1, team_count=N in 3..8 (everyone solo, "1v1v1…")
  *
  * Genres: every match has a primary_genre_id. Private rooms can additionally
  * allow a rotation pool via `allowed_genre_ids` (host-selected). Ranked/quickplay
  * uses primary_genre_id only and requires kind='system'.
+ *
+ * Sample mode:
+ *   'none'       — bring your own full track (legacy "beat battle" flow)
+ *   'generated'  — platform picks a random pack from the genre pool and
+ *                  all producers in the room get the same stems to flip
+ *   'uploaded'   — host provided a ZIP, all producers get those exact stems
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -173,6 +214,18 @@ export const matches = pgTable(
       .references(() => genres.id, { onDelete: 'restrict' }),
     allowedGenreIds: uuid().array().notNull().default(sql`ARRAY[]::uuid[]`),
 
+    // Submission-phase duration: how long producers have to make a track.
+    // Null means "fall back to the genre's format_config.phases.submitSeconds".
+    // Private rooms pick from a preset list enforced at the API (and via CHECK below):
+    //   60, 120, 300, 600, 1200, 1800, 3000, 3600 seconds
+    //   (= 1, 2, 5, 10, 20, 30, 50, 60 minutes).
+    // Other modes get opinionated per-mode defaults (see matchmaking/defaults.ts).
+    submitSeconds: integer(),
+
+    // Sample pack configuration
+    sampleMode: sampleMode().notNull().default('none'),
+    samplePackId: uuid().references(() => samplePacks.id, { onDelete: 'set null' }),
+
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ withTimezone: true }),
@@ -180,11 +233,12 @@ export const matches = pgTable(
   },
   (t) => [
     uniqueIndex('matches_room_code_unique').on(t.roomCode),
-    check('matches_team_size_range', sql`${t.teamSize} between 1 and 4`),
-    check('matches_team_count_range', sql`${t.teamCount} between 2 and 8`),
+    check('matches_team_size_range', sql`${t.teamSize} between 1 and 5`),
+    check('matches_team_count_range', sql`${t.teamCount} between 1 and 8`),
+    check('matches_total_players_max_10', sql`${t.teamSize} * ${t.teamCount} <= 10`),
     check(
-      'matches_total_players_max_8',
-      sql`${t.teamSize} * ${t.teamCount} <= 8`,
+      'matches_submit_seconds_range',
+      sql`${t.submitSeconds} IS NULL OR (${t.submitSeconds} BETWEEN 30 AND 7200)`,
     ),
   ],
 );
