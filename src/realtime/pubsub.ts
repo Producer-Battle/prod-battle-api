@@ -91,7 +91,7 @@ export function subscribe(channel: string, handler: (payload: unknown) => void):
   };
 }
 
-/** Graceful shutdown — called from server.ts if needed. */
+/** Graceful shutdown - called from server.ts if needed. */
 export async function closePubSub(): Promise<void> {
   await Promise.all([_publisher?.quit(), _subscriber?.quit()]);
 }

@@ -1,5 +1,5 @@
 // Random song-title generator for producers who leave the title field blank
-// on submission. The vibe is "phonk producer tags on SoundCloud" — short,
+// on submission. The vibe is "phonk producer tags on SoundCloud" - short,
 // moody, pronounceable. Deterministic under test via the optional random fn.
 
 const ADJECTIVES = [

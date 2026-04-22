@@ -1,7 +1,7 @@
-// POST /rooms/:code/upload-url   — returns a presigned PUT URL for the
+// POST /rooms/:code/upload-url   - returns a presigned PUT URL for the
 //                                    producer's track. Browser PUTs the file
 //                                    directly to Object Storage.
-// POST /rooms/:code/submission   — finalize: links the uploaded key back to
+// POST /rooms/:code/submission   - finalize: links the uploaded key back to
 //                                    the match + inserts a submissions row.
 //
 // Guest mode: the producer identifies via `{ user: handle }` in the body.

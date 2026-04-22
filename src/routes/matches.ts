@@ -30,11 +30,11 @@ const SamplePackSchema = z
 const CreateMatchBody = z
   .object({
     mode: z.enum(MODES),
-    // Required for private + practice. Optional for quickplay/ranked — if
+    // Required for private + practice. Optional for quickplay/ranked - if
     // omitted the server picks a random system genre when creating a new
     // lobby (matchmaking prefers joining any open lobby regardless of genre).
     genreSlug: z.string().optional().openapi({ example: 'phonk' }),
-    // MVP: FFA only — teamSize is always 1 (everyone solo).
+    // MVP: FFA only - teamSize is always 1 (everyone solo).
     teamSize: z.literal(1).default(1),
     teamCount: z.number().int().min(1).max(8).default(2),
     submitSeconds: z
@@ -116,7 +116,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
 
   // ─── Matchmaking (Quick Play / Ranked) ──────────────────────────────────
   // If genre was not pinned by the caller (default for Quick Play), look
-  // at open lobbies across ALL system genres — any free seat is a match.
+  // at open lobbies across ALL system genres - any free seat is a match.
   // Only when nothing's open do we pick a random system genre and create
   // a fresh lobby. Genre-pinned (ranked with explicit genreSlug, private,
   // practice) behaves like before.
@@ -136,7 +136,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     }>(
       // Matchmaking window: tight (90 seconds) and prefer emptier lobbies.
       // Rooms older than 90s with stale seated players (from crashed tabs,
-      // previous test runs, etc.) get ignored — two fresh Quick Play clicks
+      // previous test runs, etc.) get ignored - two fresh Quick Play clicks
       // within the window pair up, instead of one of them filling a
       // half-dead lobby and the other ending up alone.
       body.genreSlug
@@ -285,7 +285,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
       generatedPack = { id: pack.id, samples: pack.samples };
     } catch (err) {
-      // Pool not seeded yet is a non-fatal condition during local dev — log
+      // Pool not seeded yet is a non-fatal condition during local dev - log
       // a warning and continue so the match is still created.
       console.warn('[matches] sample pack generation skipped:', (err as Error).message);
     }
@@ -350,7 +350,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
 
   if (!row || !row.roomCode) return c.json({ error: 'not found' }, 404);
 
-  // Active battle-phase (if any) — drives the client's countdown on refresh.
+  // Active battle-phase (if any) - drives the client's countdown on refresh.
   const [phase] = await d.execute<{
     current_phase: string;
     transitions_at: string;

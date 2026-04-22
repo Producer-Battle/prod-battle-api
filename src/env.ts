@@ -26,7 +26,7 @@ const envSchema = z.object({
   AUTH_TRUSTED_ORIGINS: z.string().optional(),
   WEB_ORIGIN: z.string().url().optional(),
 
-  // Freesound.org APIv2 token — register at https://freesound.org/apiv2/apply/
+  // Freesound.org APIv2 token - register at https://freesound.org/apiv2/apply/
   FREESOUND_API_KEY: z.string().optional(),
 });
 

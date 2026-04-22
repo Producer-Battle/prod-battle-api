@@ -2,7 +2,7 @@
 //
 // Register a token at https://freesound.org/apiv2/apply/ and set
 // FREESOUND_API_KEY in the env. Filtering to Creative Commons 0 (CC0)
-// means we can redistribute without per-sound attribution — matches how
+// means we can redistribute without per-sound attribution - matches how
 // beat-battle.net ships kits without a credits screen.
 //
 // Rate limit: 60 req/min by default. This client stays well under that

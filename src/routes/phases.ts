@@ -1,8 +1,8 @@
 // Phase-specific endpoints:
-//   GET  /matches/votable        — matches currently open for voting
-//   GET  /matches/:code/reveal   — anonymized submissions for the reveal
-//   POST /rooms/:code/vote       — cast a vote per submission
-//   GET  /matches/:code/results  — final leaderboard with revealed identities
+//   GET  /matches/votable        - matches currently open for voting
+//   GET  /matches/:code/reveal   - anonymized submissions for the reveal
+//   POST /rooms/:code/vote       - cast a vote per submission
+//   GET  /matches/:code/results  - final leaderboard with revealed identities
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
@@ -152,8 +152,8 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   let accepted = 0;
   for (const v of body.votes) {
     const s = subById.get(v.submissionId);
-    if (!s) continue; // bad id — ignore
-    if (s.userId === u.id) continue; // self-vote — ignore
+    if (!s) continue; // bad id - ignore
+    if (s.userId === u.id) continue; // self-vote - ignore
 
     // Upsert (match, voter, submission) → weight=score
     await d

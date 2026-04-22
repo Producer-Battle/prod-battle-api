@@ -97,7 +97,7 @@ export const arApplications = pgTable('ar_applications', {
 });
 
 /*
- * Genres — two tiers: system (admin-curated, has format_config) and user (UGC tag).
+ * Genres - two tiers: system (admin-curated, has format_config) and user (UGC tag).
  * format_config defines the battle shape when this genre is used for ranked/quickplay:
  *   { submission: { maxSeconds, fileTypes[] },
  *     vote: { model: 'community'|'peer'|'judge-panel', weighted: bool },
@@ -139,7 +139,7 @@ export const genres = pgTable(
 );
 
 /*
- * Sample packs — the pool of stems a match can pull from when
+ * Sample packs - the pool of stems a match can pull from when
  * sample_mode = 'generated' or 'uploaded'.
  *
  * kind='pool':     curated library we seed per genre; drawn from at quickplay time.
@@ -173,7 +173,7 @@ export const samplePacks = pgTable('sample_packs', {
 });
 
 /*
- * Matches — solo practice, 1v1 duels, team battles up to 5v5, FFA up to 8.
+ * Matches - solo practice, 1v1 duels, team battles up to 5v5, FFA up to 8.
  * Invariant: team_size * team_count <= 10.
  *   Practice → team_size=1, team_count=1   (solo)
  *   1v1      → team_size=1, team_count=2   (2 players)
@@ -186,10 +186,10 @@ export const samplePacks = pgTable('sample_packs', {
  * uses primary_genre_id only and requires kind='system'.
  *
  * Sample mode:
- *   'none'       — bring your own full track (legacy "beat battle" flow)
- *   'generated'  — platform picks a random pack from the genre pool and
+ *   'none'       - bring your own full track (legacy "beat battle" flow)
+ *   'generated'  - platform picks a random pack from the genre pool and
  *                  all producers in the room get the same stems to flip
- *   'uploaded'   — host provided a ZIP, all producers get those exact stems
+ *   'uploaded'   - host provided a ZIP, all producers get those exact stems
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -270,7 +270,7 @@ export const matchPlayers = pgTable(
 );
 
 /*
- * Battle phases — drives the tick worker.
+ * Battle phases - drives the tick worker.
  * The tick worker polls rows WHERE transitions_at <= now() with FOR UPDATE SKIP LOCKED,
  * advances current_phase, and broadcasts via Redis.
  * ──────────────────────────────────────────────────────────────────────────
@@ -286,7 +286,7 @@ export const battlePhases = pgTable('battle_phases', {
 });
 
 /*
- * Submissions — catalog layer. Every match round produces persistent content.
+ * Submissions - catalog layer. Every match round produces persistent content.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -342,7 +342,7 @@ export const submissionTags = pgTable(
 );
 
 /*
- * Votes — one row per (match, voter, submission). weight lets us promote
+ * Votes - one row per (match, voter, submission). weight lets us promote
  * verified-producer votes later.
  * ──────────────────────────────────────────────────────────────────────────
  */
@@ -366,7 +366,7 @@ export const votes = pgTable(
 );
 
 /*
- * Ranking + seasons — Glicko per (user, genre, season).
+ * Ranking + seasons - Glicko per (user, genre, season).
  * ──────────────────────────────────────────────────────────────────────────
  */
 

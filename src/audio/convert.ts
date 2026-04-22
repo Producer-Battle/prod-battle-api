@@ -1,7 +1,7 @@
 // ffmpeg .ogg → .wav converter. Runs the ffmpeg binary from the container
 // (the base Docker image ships ffmpeg via `apk add ffmpeg` or it's present
 // in the jobs/ffmpeg image). For local dev, the host must have ffmpeg
-// installed — document this in README.
+// installed - document this in README.
 
 import { spawn } from 'node:child_process';
 

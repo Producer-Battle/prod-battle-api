@@ -3,24 +3,24 @@
 // Other modes use opinionated defaults that "feel right" for the mode.
 
 export const PRIVATE_SUBMIT_SECONDS_PRESETS = [
-  60, // 1 min — speedrun
+  60, // 1 min - speedrun
   120, // 2 min
   300, // 5 min
   600, // 10 min
   1200, // 20 min
   1800, // 30 min
   3000, // 50 min
-  3600, // 60 min — the deep-work option
+  3600, // 60 min - the deep-work option
 ] as const;
 
 export type MatchMode = 'quickplay' | 'ranked' | 'private' | 'tournament' | 'practice';
 
 // Submission-phase duration (seconds) used when a match row has
 // `submit_seconds = NULL`. Picked to fit each mode's vibe:
-//   quickplay  — fast, casual; drop a loop and move on
-//   ranked     — more deliberate but still snappy
-//   tournament — production round; longer, more polished submissions
-//   practice   — relaxed, no pressure
+//   quickplay  - fast, casual; drop a loop and move on
+//   ranked     - more deliberate but still snappy
+//   tournament - production round; longer, more polished submissions
+//   practice   - relaxed, no pressure
 export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
   quickplay: 300, // 5 min
   ranked: 600, // 10 min

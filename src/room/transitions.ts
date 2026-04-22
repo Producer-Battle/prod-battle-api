@@ -139,8 +139,8 @@ export async function advancePhase(
 }
 
 /**
- * When a submission lands, check if every seated player has submitted —
- * if so, short-circuit the submit timer and start the reveal.
+ * When a submission lands, check if every seated player has submitted.
+ * If so, short-circuit the submit timer and start the reveal.
  */
 export async function maybeAdvanceAfterSubmission(matchId: string): Promise<void> {
   const d = db();
@@ -158,7 +158,7 @@ export async function maybeAdvanceAfterSubmission(matchId: string): Promise<void
 
 /**
  * When a vote lands, check if every seated player has voted on every
- * non-self submission — if so, close the vote window and tally results.
+ * non-self submission - if so, close the vote window and tally results.
  */
 export async function maybeAdvanceAfterVote(matchId: string): Promise<void> {
   const d = db();
@@ -189,6 +189,6 @@ export async function maybeAdvanceAfterVote(matchId: string): Promise<void> {
   }
 }
 
-// Suppress unused import warnings — drizzle helpers stay available for
+// Suppress unused import warnings - drizzle helpers stay available for
 // future per-phase side effects (e.g. reveal ordering).
 export const _unused = { and, asc };

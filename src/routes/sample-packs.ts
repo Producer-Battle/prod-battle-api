@@ -1,7 +1,7 @@
 // GET /matches/:code/sample-pack
 // GET /matches/:code/sample-pack/zip
 //
-// Both look up the match's chosen pool pack (one per match — everyone in
+// Both look up the match's chosen pool pack (one per match - everyone in
 // the room gets the same stems) and return either:
 //   - the list of individual stem URLs (+ the ZIP url inline), or
 //   - the pre-built ZIP URL direct from storage.

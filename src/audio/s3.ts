@@ -68,6 +68,6 @@ export function keyFromUrl(url: string | null | undefined): string | null {
 /** Re-sign a stored unsigned URL with a short-lived GET signature. */
 export async function signUrl(url: string, ttlSec = 86_400): Promise<string> {
   const key = keyFromUrl(url);
-  if (!key) return url; // not ours — pass through
+  if (!key) return url; // not ours - pass through
   return signedDownloadUrl(key, ttlSec);
 }

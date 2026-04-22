@@ -1,8 +1,8 @@
 // REST actions for match rooms.
-// POST /rooms/:code/join   — add a player (or return existing seat)
-// POST /rooms/:code/leave  — remove a player
-// POST /rooms/:code/ready  — toggle the ready flag
-// POST /rooms/:code/start  — host-only: write a battle_phases row and start match
+// POST /rooms/:code/join   - add a player (or return existing seat)
+// POST /rooms/:code/leave  - remove a player
+// POST /rooms/:code/ready  - toggle the ready flag
+// POST /rooms/:code/start  - host-only: write a battle_phases row and start match
 
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
@@ -189,7 +189,7 @@ roomActionsRoutes.post('/rooms/:code/start', async (c) => {
 
   const d = db();
 
-  // Verify the user exists (host check — until auth lands, any player can start).
+  // Verify the user exists (host check - until auth lands, any player can start).
   const userRows = await d.execute<{ id: string }>(
     sql`SELECT id FROM users WHERE handle = ${handle} LIMIT 1`,
   );

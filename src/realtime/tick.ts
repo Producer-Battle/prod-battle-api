@@ -15,10 +15,10 @@ import { publish } from './pubsub.js';
 // Phase durations (seconds) for non-submit phases.
 const PHASE_DURATION: Record<string, number> = {
   lobby: 0,
-  submit: 300, // fallback — match.submitSeconds takes precedence
+  submit: 300, // fallback - match.submitSeconds takes precedence
   reveal: 60,
   vote: 90,
-  results: 0, // terminal — no next phase
+  results: 0, // terminal - no next phase
 };
 
 async function tick(): Promise<void> {
@@ -41,7 +41,7 @@ async function tick(): Promise<void> {
   for (const row of due) {
     const next = nextPhase(row.currentPhase as Parameters<typeof nextPhase>[0]);
     if (!next) {
-      // Terminal phase — remove from battle_phases so we stop ticking it.
+      // Terminal phase - remove from battle_phases so we stop ticking it.
       await d.delete(battlePhases).where(sql`${battlePhases.matchId} = ${row.matchId}`);
       continue;
     }

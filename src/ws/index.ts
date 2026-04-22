@@ -33,7 +33,7 @@ function parseUserId(url: string | undefined): string | null {
   return null;
 }
 
-/** Ensure a user row exists (guest stub — real auth agent will replace). */
+/** Ensure a user row exists (guest stub - real auth agent will replace). */
 async function ensureGuestUser(handle: string): Promise<string> {
   const d = db();
   const rows = await d.execute<{ id: string }>(

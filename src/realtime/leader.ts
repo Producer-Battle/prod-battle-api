@@ -52,7 +52,7 @@ export function runAsLeader(key: string, onBecomeLeader: () => Promise<void>): (
         await onBecomeLeader();
       }
     } catch (err) {
-      // network hiccup — not leader, will retry
+      // network hiccup - not leader, will retry
     }
   }
 
