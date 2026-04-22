@@ -4,6 +4,7 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import { cors } from 'hono/cors';
 import { auth } from './auth/config.js';
 import { env } from './env.js';
+import { startGenrePromotionLoop } from './genres/promote.js';
 import { attachSession } from './middleware/session.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
@@ -64,10 +65,12 @@ const server: ServerType = serve(
 // Cast to the Node.js http.Server so ws can hook the 'upgrade' event.
 attachWebSocket(server as unknown as import('node:http').Server);
 const stopTick = startTickLoop();
+const stopGenrePromotion = startGenrePromotionLoop();
 
 const shutdown = (signal: string) => {
   console.log(`[prod-battle-api] ${signal} received, draining…`);
   stopTick();
+  stopGenrePromotion();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 };
