@@ -42,6 +42,7 @@ const server: ServerType = serve(
   {
     fetch: app.fetch,
     port: env.PORT,
+    hostname: '0.0.0.0',
   },
   ({ address, port }) => {
     console.log(`[prod-battle-api] listening on http://${address}:${port} (${env.NODE_ENV})`);
