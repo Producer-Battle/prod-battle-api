@@ -60,6 +60,11 @@ export const users = pgTable(
   {
     id: uuid().primaryKey().defaultRandom(),
     email: text().notNull(),
+    // Always true since we intentionally disabled email verification to
+    // remove signup friction. Kept as a column so better-auth's adapter
+    // contract is satisfied without custom mapping, and so we can flip
+    // verification on later without a migration.
+    emailVerified: boolean().notNull().default(true),
     handle: text().notNull(),
     role: userRole().notNull().default('producer'),
     avatarUrl: text(),
@@ -133,9 +138,31 @@ export const genres = pgTable(
     formatConfig: jsonb().$type<GenreFormatConfig | null>(),
     createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     status: genreStatus().notNull().default('active'),
+    // User-submitted genres enter status='proposed' with votingEndsAt = now + 7d.
+    // Weekly job promotes genres with ≥ threshold unique votes to status='active'
+    // (usable by everyone) or status='archived' if they didn't hit the bar.
+    // Null for system genres + user genres already decided.
+    votingEndsAt: timestamp({ withTimezone: true }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('genres_slug_unique').on(t.slug)],
+);
+
+// One vote per (genre, voter). Casting a vote is an INSERT; "unvote" is DELETE.
+// Only registered users (role producer / ar / admin) can vote, gated at the
+// API layer. Voting closes when genres.votingEndsAt passes.
+export const genreVotes = pgTable(
+  'genre_votes',
+  {
+    genreId: uuid()
+      .notNull()
+      .references(() => genres.id, { onDelete: 'cascade' }),
+    voterId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.genreId, t.voterId] })],
 );
 
 /*
@@ -470,5 +497,62 @@ export const featureFlags = pgTable('feature_flags', {
   key: text().primaryKey(),
   enabled: boolean().notNull().default(false),
   rolloutPct: integer().notNull().default(0),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * better-auth tables
+ * ──────────────────────────────────────────────────────────────────────────
+ * better-auth owns session / credential / OAuth-linking storage. Schema
+ * follows the library's v1 adapter contract — don't rename columns without
+ * also updating the auth config. `users` above stays the single source of
+ * identity (handle, role); better-auth writes to it via the drizzle adapter.
+ */
+
+export const accounts = pgTable(
+  'accounts',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    accountId: text().notNull(), // provider user id (google sub, or email for credentials)
+    providerId: text().notNull(), // 'credential' | 'google' | …
+    accessToken: text(),
+    refreshToken: text(),
+    idToken: text(),
+    accessTokenExpiresAt: timestamp({ withTimezone: true }),
+    refreshTokenExpiresAt: timestamp({ withTimezone: true }),
+    scope: text(),
+    password: text(), // bcrypt hash, credential provider only
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('accounts_provider_account_unique').on(t.providerId, t.accountId)],
+);
+
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: text().notNull(),
+    ipAddress: text(),
+    userAgent: text(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('sessions_token_unique').on(t.token)],
+);
+
+export const verifications = pgTable('verifications', {
+  id: uuid().primaryKey().defaultRandom(),
+  identifier: text().notNull(),
+  value: text().notNull(),
+  expiresAt: timestamp({ withTimezone: true }).notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });

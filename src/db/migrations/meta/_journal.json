@@ -36,6 +36,20 @@
       "when": 1776871110853,
       "tag": "0004_perpetual_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776892438655,
+      "tag": "0005_outstanding_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776892458815,
+      "tag": "0006_messy_shotgun",
+      "breakpoints": true
     }
   ]
 }

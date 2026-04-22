@@ -1,0 +1,99 @@
+// better-auth instance for the prod-battle API.
+//
+// Providers:
+//   - email + password (no verification gate — user.emailVerified defaults to
+//     true so sign-up lands the user straight into a session)
+//   - Google OAuth (conditionally enabled — only if both env vars are set)
+//
+// Drizzle adapter backs all persistence (users, accounts, sessions,
+// verifications) against the same Postgres we already use. The `users`
+// table is shared with the rest of the app — better-auth writes email /
+// emailVerified / handle (as `name`) / avatarUrl (as `image`) via the
+// field mapping below.
+
+import { betterAuth } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { db as getDb } from '../db/client.js';
+import * as schema from '../db/schema.js';
+import { env } from '../env.js';
+
+const googleConfigured = Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
+
+// Dev fallback so `pnpm dev` without a .env still boots. In prod the
+// AUTH_SECRET env var MUST be set to a ≥32-char random string.
+const authSecret =
+  env.AUTH_SECRET ??
+  (env.NODE_ENV === 'production' ? '' : 'dev-only-insecure-secret-0123456789abcdef');
+
+const baseUrl = env.AUTH_BASE_URL ?? `http://localhost:${env.PORT}`;
+
+export const auth = betterAuth({
+  database: drizzleAdapter(getDb(), {
+    provider: 'pg',
+    schema: {
+      user: schema.users,
+      account: schema.accounts,
+      session: schema.sessions,
+      verification: schema.verifications,
+    },
+    // Map better-auth's default field names onto our existing column names.
+    // `users.handle` plays the role of better-auth's `name`; `avatarUrl` is
+    // `image`. `role` stays ours — better-auth just round-trips it.
+    usePlural: true,
+  }),
+
+  secret: authSecret,
+  baseURL: baseUrl,
+  trustedOrigins: (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+
+  emailAndPassword: {
+    enabled: true,
+    // No verification friction — sign-up returns a live session immediately.
+    requireEmailVerification: false,
+    minPasswordLength: 8,
+    maxPasswordLength: 128,
+  },
+
+  socialProviders: googleConfigured
+    ? {
+        google: {
+          clientId: env.GOOGLE_OAUTH_CLIENT_ID as string,
+          clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET as string,
+        },
+      }
+    : {},
+
+  user: {
+    additionalFields: {
+      handle: {
+        type: 'string',
+        required: false,
+        input: true,
+      },
+      role: {
+        type: 'string',
+        required: false,
+        defaultValue: 'producer',
+        input: false, // role can't be self-assigned at sign-up; admins promote
+      },
+    },
+  },
+
+  session: {
+    cookieCache: {
+      enabled: true,
+      maxAge: 60 * 5, // 5 min in-memory before re-checking DB
+    },
+    expiresIn: 60 * 60 * 24 * 30, // 30 days
+  },
+
+  advanced: {
+    cookiePrefix: 'pb_',
+    useSecureCookies: env.NODE_ENV === 'production',
+  },
+});
+
+export const isGoogleOAuthConfigured = (): boolean => googleConfigured;

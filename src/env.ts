@@ -31,6 +31,17 @@ const envSchema = z.object({
   AUTH_TRUSTED_ORIGINS: z.string().optional(),
   WEB_ORIGIN: z.string().optional(),
 
+  // Public-facing base URL of this API. Used by better-auth for cookie
+  // domain + OAuth redirect URLs. In prod: https://api.prodbattle.com.
+  // In local dev defaults to http://localhost:8080.
+  AUTH_BASE_URL: z.string().optional(),
+
+  // Google OAuth — optional. If unset, the Google sign-in button on the
+  // web is still rendered but the `/auth/callback/google` endpoint returns
+  // 503 "google_oauth_not_configured". Setting both enables the provider.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+
   // Freesound.org APIv2 token - register at https://freesound.org/apiv2/apply/
   FREESOUND_API_KEY: z.string().optional(),
 });
