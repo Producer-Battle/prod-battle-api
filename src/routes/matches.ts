@@ -30,7 +30,10 @@ const SamplePackSchema = z
 const CreateMatchBody = z
   .object({
     mode: z.enum(MODES),
-    genreSlug: z.string().openapi({ example: 'phonk' }),
+    // Required for private + practice. Optional for quickplay/ranked — if
+    // omitted the server picks a random system genre when creating a new
+    // lobby (matchmaking prefers joining any open lobby regardless of genre).
+    genreSlug: z.string().optional().openapi({ example: 'phonk' }),
     // MVP: FFA only — teamSize is always 1 (everyone solo).
     teamSize: z.literal(1).default(1),
     teamCount: z.number().int().min(1).max(8).default(2),
@@ -41,6 +44,9 @@ const CreateMatchBody = z
       .describe(
         'Submission-phase duration in seconds. Required for private rooms (must be one of the presets). Omit for other modes to use the per-mode default.',
       ),
+  })
+  .refine((v) => v.mode === 'quickplay' || v.mode === 'ranked' || typeof v.genreSlug === 'string', {
+    message: 'genreSlug is required for private, tournament, and practice modes',
   })
   .refine((v) => v.teamSize * v.teamCount <= 10, {
     message: 'team_size * team_count must be <= 10',
@@ -104,20 +110,12 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   const body = c.req.valid('json');
   const d = db();
 
-  const [genre] = await d.select().from(genres).where(eq(genres.slug, body.genreSlug)).limit(1);
-  if (!genre) return c.json({ error: 'genre not found' }, 404);
-
-  if ((body.mode === 'quickplay' || body.mode === 'ranked') && genre.kind !== 'system') {
-    return c.json({ error: `${body.mode} requires a system genre` }, 400);
-  }
-
-  // ─── Matchmaking: reuse an open Quick Play / Ranked lobby when possible ──
-  // We never reuse private rooms (host-invited) or practice (solo). For
-  // quickplay + ranked, look for a lobby of the same mode + genre that:
-  //   - is still in `lobby` phase (hasn't started yet)
-  //   - has at least one free seat
-  //   - was created in the last 10 minutes (older are stale)
-  // If one exists, return it instead of creating a new match.
+  // ─── Matchmaking (Quick Play / Ranked) ──────────────────────────────────
+  // If genre was not pinned by the caller (default for Quick Play), look
+  // at open lobbies across ALL system genres — any free seat is a match.
+  // Only when nothing's open do we pick a random system genre and create
+  // a fresh lobby. Genre-pinned (ranked with explicit genreSlug, private,
+  // practice) behaves like before.
   if (body.mode === 'quickplay' || body.mode === 'ranked') {
     const openLobbies = await d.execute<{
       id: string;
@@ -132,20 +130,46 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       genre_slug: string;
       genre_name: string;
     }>(
-      sql`SELECT m.id, m.room_code, m.mode, m.status,
-                 m.team_size, m.team_count, m.submit_seconds, m.created_at,
+      // Matchmaking window: tight (90 seconds) and prefer emptier lobbies.
+      // Rooms older than 90s with stale seated players (from crashed tabs,
+      // previous test runs, etc.) get ignored — two fresh Quick Play clicks
+      // within the window pair up, instead of one of them filling a
+      // half-dead lobby and the other ending up alone.
+      body.genreSlug
+        ? sql`SELECT m.id, m.room_code, m.mode, m.status,
+                     m.team_size, m.team_count, m.submit_seconds, m.created_at,
+                     (SELECT COUNT(*)::int FROM match_players
+                       WHERE match_id = m.id AND is_spectator = false) AS seated,
+                     g.slug AS genre_slug, g.name AS genre_name
+                FROM matches m
+                JOIN genres g ON g.id = m.primary_genre_id
+               WHERE m.mode = ${body.mode}
+                 AND m.status = 'lobby'
+                 AND g.slug = ${body.genreSlug}
+                 AND m.room_code IS NOT NULL
+                 AND m.created_at > now() - interval '90 seconds'
+               ORDER BY
                  (SELECT COUNT(*)::int FROM match_players
-                   WHERE match_id = m.id AND is_spectator = false) AS seated,
-                 g.slug AS genre_slug, g.name AS genre_name
-            FROM matches m
-            JOIN genres g ON g.id = m.primary_genre_id
-           WHERE m.mode = ${body.mode}
-             AND m.status = 'lobby'
-             AND m.primary_genre_id = ${genre.id}
-             AND m.room_code IS NOT NULL
-             AND m.created_at > now() - interval '10 minutes'
-           ORDER BY m.created_at DESC
-           LIMIT 5`,
+                    WHERE match_id = m.id AND is_spectator = false) ASC,
+                 m.created_at DESC
+               LIMIT 5`
+        : sql`SELECT m.id, m.room_code, m.mode, m.status,
+                     m.team_size, m.team_count, m.submit_seconds, m.created_at,
+                     (SELECT COUNT(*)::int FROM match_players
+                       WHERE match_id = m.id AND is_spectator = false) AS seated,
+                     g.slug AS genre_slug, g.name AS genre_name
+                FROM matches m
+                JOIN genres g ON g.id = m.primary_genre_id
+               WHERE m.mode = ${body.mode}
+                 AND m.status = 'lobby'
+                 AND g.kind = 'system'
+                 AND m.room_code IS NOT NULL
+                 AND m.created_at > now() - interval '90 seconds'
+               ORDER BY
+                 (SELECT COUNT(*)::int FROM match_players
+                    WHERE match_id = m.id AND is_spectator = false) ASC,
+                 m.created_at DESC
+               LIMIT 10`,
     );
 
     const available = openLobbies.find(
@@ -169,6 +193,29 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
         201,
       );
     }
+  }
+
+  // No match joined → create a new one. Resolve the genre:
+  //   - if caller passed genreSlug, use it (still validated below).
+  //   - else pick a random system genre.
+  let resolvedSlug = body.genreSlug;
+  if (!resolvedSlug) {
+    const systemGenres = await d.execute<{ slug: string }>(
+      sql`SELECT slug FROM genres WHERE kind = 'system' AND status = 'active'`,
+    );
+    if (systemGenres.length === 0) {
+      return c.json({ error: 'no system genres configured' }, 500);
+    }
+    resolvedSlug = (
+      systemGenres[Math.floor(Math.random() * systemGenres.length)] as { slug: string }
+    ).slug;
+  }
+
+  const [genre] = await d.select().from(genres).where(eq(genres.slug, resolvedSlug)).limit(1);
+  if (!genre) return c.json({ error: 'genre not found' }, 404);
+
+  if ((body.mode === 'quickplay' || body.mode === 'ranked') && genre.kind !== 'system') {
+    return c.json({ error: `${body.mode} requires a system genre` }, 400);
   }
 
   const submitSeconds = body.submitSeconds ?? SUBMIT_SECONDS_DEFAULT[body.mode];
@@ -229,7 +276,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   } | null = null;
   if (sampleMode === 'generated') {
     try {
-      const pack = await generateMatchPack(match.id, body.genreSlug);
+      const pack = await generateMatchPack(match.id, resolvedSlug);
       // Link the pack back to the match.
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
       generatedPack = { id: pack.id, samples: pack.samples };
