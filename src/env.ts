@@ -23,8 +23,10 @@ const envSchema = z.object({
   SCW_PROJECT_ID: z.string().optional(),
 
   AUTH_SECRET: z.string().min(32).optional(),
+  // Comma-separated list of trusted origins (see server.ts). Kept as a
+  // plain string — validating each entry as a URL is the caller's job.
   AUTH_TRUSTED_ORIGINS: z.string().optional(),
-  WEB_ORIGIN: z.string().url().optional(),
+  WEB_ORIGIN: z.string().optional(),
 
   // Freesound.org APIv2 token - register at https://freesound.org/apiv2/apply/
   FREESOUND_API_KEY: z.string().optional(),
