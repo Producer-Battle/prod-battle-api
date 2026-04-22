@@ -7,6 +7,7 @@ import { phasesRoutes } from './phases.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
 import { submissionsRoutes } from './submissions.js';
+import { userPacksRoutes } from './user-packs.js';
 
 export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', healthRoutes);
@@ -17,5 +18,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', samplePacksRoutes);
   app.route('/', submissionsRoutes);
   app.route('/', phasesRoutes);
-  // TODO: auth, players, ar, admin
+  app.route('/', userPacksRoutes);
 }
