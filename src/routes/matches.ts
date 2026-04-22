@@ -111,6 +111,66 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     return c.json({ error: `${body.mode} requires a system genre` }, 400);
   }
 
+  // ─── Matchmaking: reuse an open Quick Play / Ranked lobby when possible ──
+  // We never reuse private rooms (host-invited) or practice (solo). For
+  // quickplay + ranked, look for a lobby of the same mode + genre that:
+  //   - is still in `lobby` phase (hasn't started yet)
+  //   - has at least one free seat
+  //   - was created in the last 10 minutes (older are stale)
+  // If one exists, return it instead of creating a new match.
+  if (body.mode === 'quickplay' || body.mode === 'ranked') {
+    const openLobbies = await d.execute<{
+      id: string;
+      room_code: string;
+      mode: string;
+      status: string;
+      team_size: number;
+      team_count: number;
+      submit_seconds: number | null;
+      created_at: string;
+      seated: number;
+      genre_slug: string;
+      genre_name: string;
+    }>(
+      sql`SELECT m.id, m.room_code, m.mode, m.status,
+                 m.team_size, m.team_count, m.submit_seconds, m.created_at,
+                 (SELECT COUNT(*)::int FROM match_players
+                   WHERE match_id = m.id AND is_spectator = false) AS seated,
+                 g.slug AS genre_slug, g.name AS genre_name
+            FROM matches m
+            JOIN genres g ON g.id = m.primary_genre_id
+           WHERE m.mode = ${body.mode}
+             AND m.status = 'lobby'
+             AND m.primary_genre_id = ${genre.id}
+             AND m.room_code IS NOT NULL
+             AND m.created_at > now() - interval '10 minutes'
+           ORDER BY m.created_at DESC
+           LIMIT 5`,
+    );
+
+    const available = openLobbies.find(
+      (m) => Number(m.seated) < Number(m.team_size) * Number(m.team_count),
+    );
+    if (available) {
+      const submitSeconds = available.submit_seconds ?? SUBMIT_SECONDS_DEFAULT[body.mode] ?? 300;
+      return c.json(
+        {
+          id: available.id,
+          mode: body.mode,
+          roomCode: available.room_code,
+          teamSize: available.team_size,
+          teamCount: available.team_count,
+          submitSeconds,
+          genre: { slug: available.genre_slug, name: available.genre_name },
+          status: available.status,
+          createdAt: new Date(available.created_at).toISOString(),
+          samplePack: null, // already generated at original creation
+        },
+        201,
+      );
+    }
+  }
+
   const submitSeconds = body.submitSeconds ?? SUBMIT_SECONDS_DEFAULT[body.mode];
 
   // Determine sample mode: follow the per-mode default.

@@ -14,6 +14,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { bucket, publicUrl, s3, signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users } from '../db/schema.js';
+import { maybeAdvanceAfterSubmission } from '../room/transitions.js';
 
 export const submissionsRoutes = new OpenAPIHono();
 
@@ -177,6 +178,12 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
     .returning();
 
   if (!row) return c.json({ error: 'failed to save submission' }, 500);
+
+  // If every seated player has submitted, short-circuit the submit timer
+  // and advance straight into reveal.
+  await maybeAdvanceAfterSubmission(result.match.id).catch((err) =>
+    console.warn('[submissions] advance check failed:', (err as Error).message),
+  );
 
   return c.json({ id: row.id, audioUrl: await signUrl(audioUrl) });
 });

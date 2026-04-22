@@ -8,15 +8,16 @@ import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { nextPhase } from '../room/state.js';
+import { onEnterPhase } from '../room/transitions.js';
 import { runAsLeader } from './leader.js';
 import { publish } from './pubsub.js';
 
 // Phase durations (seconds) for non-submit phases.
 const PHASE_DURATION: Record<string, number> = {
-  lobby: 0, // lobby has no auto-expiry by default
+  lobby: 0,
   submit: 300, // fallback — match.submitSeconds takes precedence
-  reveal: 30,
-  vote: 60,
+  reveal: 60,
+  vote: 90,
   results: 0, // terminal — no next phase
 };
 
@@ -76,6 +77,15 @@ async function tick(): Promise<void> {
       phase: next,
       transitionsAt: transitionsAt.getTime(),
     });
+
+    // Also update match status so REST reads reflect the current phase.
+    await d
+      .update(matches)
+      .set({ status: next === 'results' ? 'results' : next })
+      .where(sql`${matches.id} = ${row.matchId}`);
+
+    // Domain side effects (vote tally etc.)
+    await onEnterPhase(row.matchId, next);
 
     console.log(`[tick] ${row.matchId}: ${row.currentPhase} → ${next}`);
   }
