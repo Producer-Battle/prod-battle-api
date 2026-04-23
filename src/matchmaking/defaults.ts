@@ -11,7 +11,7 @@ export const PRIVATE_SUBMIT_SECONDS_PRESETS = [
   3600, // 60 min - the deep-work option
 ] as const;
 
-export type MatchMode = 'quickplay' | 'ranked' | 'private' | 'tournament' | 'practice';
+export type MatchMode = 'quickplay' | 'ranked' | 'private' | 'tournament' | 'practice' | 'flip';
 
 // Submission-phase duration (seconds) used when a match row has
 // `submit_seconds = NULL`. Picked to fit each mode's vibe:
@@ -25,6 +25,7 @@ export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
   private: 600, // fallback if host didn't pick (shouldn't happen)
   tournament: 1800, // 30 min
   practice: 900, // 15 min
+  flip: 600, // 10 min - enough to arrange a loop, not so long it drags
 };
 
 // Team sizes each mode allows. Private = everything. Others are fixed.
@@ -55,6 +56,12 @@ export const ALLOWED_TEAM_LAYOUTS: Record<
     { teamSize: 2, teamCount: 2, label: '2v2' },
   ],
   practice: [{ teamSize: 1, teamCount: 1, label: 'solo' }],
+  // Sample Flip is always FFA - everyone flips the same source, community vote.
+  flip: [
+    { teamSize: 1, teamCount: 3, label: 'FFA-3' },
+    { teamSize: 1, teamCount: 4, label: 'FFA-4' },
+    { teamSize: 1, teamCount: 8, label: 'FFA-8' },
+  ],
 };
 
 // Sample mode options per match mode.
@@ -65,6 +72,9 @@ export const DEFAULT_SAMPLE_MODE: Record<MatchMode, 'none' | 'generated' | 'uplo
   private: 'generated',
   tournament: 'generated',
   practice: 'none',
+  // Flip matches also get a generated drum pack alongside the main flip
+  // source so producers have drums/bass to build around the loop.
+  flip: 'generated',
 };
 
 // Stem set expected for each genre's generated pack. Used by the pool

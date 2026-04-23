@@ -33,6 +33,7 @@ export const matchMode = pgEnum('match_mode', [
   'private',
   'tournament',
   'practice',
+  'flip',
 ]);
 
 export const matchStatus = pgEnum('match_status', [
@@ -279,6 +280,11 @@ export const matches = pgTable(
     // Sample pack configuration
     sampleMode: sampleMode().notNull().default('none'),
     samplePackId: uuid().references(() => samplePacks.id, { onDelete: 'set null' }),
+
+    // Sample Flip: the single source loop the room is flipping. Populated
+    // when mode='flip'; null otherwise. If the source row is deleted later
+    // we keep the match history but lose the reference - fine for audit.
+    flipSourceId: uuid().references(() => flipSources.id, { onDelete: 'set null' }),
 
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

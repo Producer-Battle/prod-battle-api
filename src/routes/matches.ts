@@ -1,7 +1,14 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { genres, matchPlayers, matchTeams, matches, samplePacks } from '../db/schema.js';
+import {
+  flipSources,
+  genres,
+  matchPlayers,
+  matchTeams,
+  matches,
+  samplePacks,
+} from '../db/schema.js';
 import { generateMatchPack } from '../genres/generate.js';
 import {
   DEFAULT_SAMPLE_MODE,
@@ -15,7 +22,7 @@ export const matchesRoutes = new OpenAPIHono();
 // Apply the anonymous match-creation quota only to POST /matches.
 matchesRoutes.use('/matches', requireMatchQuota());
 
-const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice'] as const;
+const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice', 'flip'] as const;
 const PRIVATE_PRESETS = PRIVATE_SUBMIT_SECONDS_PRESETS as unknown as [number, ...number[]];
 
 const SamplePackItemSchema = z.object({
@@ -34,9 +41,10 @@ const SamplePackSchema = z
 const CreateMatchBody = z
   .object({
     mode: z.enum(MODES),
-    // Required for private + practice. Optional for quickplay/ranked - if
-    // omitted the server picks a random system genre when creating a new
-    // lobby (matchmaking prefers joining any open lobby regardless of genre).
+    // Required for private + practice. Optional for quickplay/ranked/flip
+    // - if omitted the server picks a random system genre when creating a
+    // new lobby (matchmaking prefers joining any open lobby regardless of
+    // genre).
     genreSlug: z.string().optional().openapi({ example: 'phonk' }),
     // MVP: FFA only - teamSize is always 1 (everyone solo).
     teamSize: z.literal(1).default(1),
@@ -48,10 +56,20 @@ const CreateMatchBody = z
       .describe(
         'Submission-phase duration in seconds. Required for private rooms (must be one of the presets). Omit for other modes to use the per-mode default.',
       ),
+    // Optional Sample Flip source override. When null/missing the server
+    // picks a random active flip source (filtered by genre if present).
+    flipSourceId: z.string().uuid().optional(),
   })
-  .refine((v) => v.mode === 'quickplay' || v.mode === 'ranked' || typeof v.genreSlug === 'string', {
-    message: 'genreSlug is required for private, tournament, and practice modes',
-  })
+  .refine(
+    (v) =>
+      v.mode === 'quickplay' ||
+      v.mode === 'ranked' ||
+      v.mode === 'flip' ||
+      typeof v.genreSlug === 'string',
+    {
+      message: 'genreSlug is required for private, tournament, and practice modes',
+    },
+  )
   .refine((v) => v.teamSize * v.teamCount <= 10, {
     message: 'team_size * team_count must be <= 10',
   })
@@ -68,6 +86,15 @@ const CreateMatchBody = z
   )
   .openapi('CreateMatchBody');
 
+const FlipSourceSchema = z
+  .object({
+    id: z.string().uuid(),
+    label: z.string(),
+    url: z.string().url(),
+    durationSec: z.number().int().nullable(),
+  })
+  .openapi('FlipSource');
+
 const MatchResponse = z
   .object({
     id: z.string().uuid(),
@@ -80,6 +107,8 @@ const MatchResponse = z
     status: z.string(),
     createdAt: z.string(),
     samplePack: SamplePackSchema.nullable().optional(),
+    // Populated when mode='flip' - the single loop the room is flipping.
+    flipSource: FlipSourceSchema.nullable().optional(),
     // Phase info for client re-hydration on refresh. Present once a
     // battle_phases row exists (i.e. match has left the lobby).
     currentPhase: z.string().nullable(),
@@ -124,7 +153,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   // Only when nothing's open do we pick a random system genre and create
   // a fresh lobby. Genre-pinned (ranked with explicit genreSlug, private,
   // practice) behaves like before.
-  if (body.mode === 'quickplay' || body.mode === 'ranked') {
+  if (body.mode === 'quickplay' || body.mode === 'ranked' || body.mode === 'flip') {
     const openLobbies = await d.execute<{
       id: string;
       room_code: string;
@@ -197,6 +226,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           status: available.status,
           createdAt: new Date(available.created_at).toISOString(),
           samplePack: null, // already generated at original creation
+          flipSource: null, // client can re-fetch via GET /matches/{code}
         },
         201,
       );
@@ -222,8 +252,68 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   const [genre] = await d.select().from(genres).where(eq(genres.slug, resolvedSlug)).limit(1);
   if (!genre) return c.json({ error: 'genre not found' }, 404);
 
-  if ((body.mode === 'quickplay' || body.mode === 'ranked') && genre.kind !== 'system') {
+  if (
+    (body.mode === 'quickplay' || body.mode === 'ranked' || body.mode === 'flip') &&
+    genre.kind !== 'system'
+  ) {
     return c.json({ error: `${body.mode} requires a system genre` }, 400);
+  }
+
+  // For Sample Flip: resolve the flip source. If the caller passed one,
+  // honour it; otherwise pick a random active source (filtered by genre
+  // when we have one, else global). If nothing's available, reject - a
+  // flip match without a source to flip has no prompt.
+  let flipSource: typeof flipSources.$inferSelect | null = null;
+  if (body.mode === 'flip') {
+    if (body.flipSourceId) {
+      const [picked] = await d
+        .select()
+        .from(flipSources)
+        .where(eq(flipSources.id, body.flipSourceId))
+        .limit(1);
+      if (!picked || !picked.active) {
+        return c.json({ error: 'flip source not available' }, 404);
+      }
+      flipSource = picked;
+    } else {
+      // Prefer sources tagged with the chosen genre; fall back to any
+      // active source if none match. ORDER BY random() is cheap at this
+      // table's size and keeps rotation feeling fresh.
+      const pickedByGenre = await d.execute<{
+        id: string;
+        label: string;
+        url: string;
+        duration_sec: number | null;
+      }>(
+        sql`SELECT id, label, url, duration_sec
+              FROM flip_sources
+             WHERE active = true
+               AND genre_id = ${genre.id}
+             ORDER BY random()
+             LIMIT 1`,
+      );
+      const pickedAny = pickedByGenre.length
+        ? pickedByGenre
+        : await d.execute<{ id: string; label: string; url: string; duration_sec: number | null }>(
+            sql`SELECT id, label, url, duration_sec
+                  FROM flip_sources
+                 WHERE active = true
+                 ORDER BY random()
+                 LIMIT 1`,
+          );
+      const pickRow = pickedAny[0];
+      if (!pickRow) {
+        return c.json({ error: 'no flip sources available' }, 503);
+      }
+      // Load the full row so downstream inserts and responses share one shape.
+      const [full] = await d
+        .select()
+        .from(flipSources)
+        .where(eq(flipSources.id, pickRow.id))
+        .limit(1);
+      if (!full) return c.json({ error: 'no flip sources available' }, 503);
+      flipSource = full;
+    }
   }
 
   const submitSeconds = body.submitSeconds ?? SUBMIT_SECONDS_DEFAULT[body.mode];
@@ -247,6 +337,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           primaryGenreId: genre.id,
           submitSeconds,
           sampleMode,
+          flipSourceId: flipSource?.id ?? null,
         })
         .returning();
       created = row;
@@ -307,6 +398,14 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       status: match.status,
       createdAt: match.createdAt.toISOString(),
       samplePack: generatedPack,
+      flipSource: flipSource
+        ? {
+            id: flipSource.id,
+            label: flipSource.label,
+            url: flipSource.url,
+            durationSec: flipSource.durationSec ?? null,
+          }
+        : null,
     },
     201,
   );
@@ -346,6 +445,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       genreName: genres.name,
       samplePackId: matches.samplePackId,
       sampleMode: matches.sampleMode,
+      flipSourceId: matches.flipSourceId,
     })
     .from(matches)
     .innerJoin(genres, eq(genres.id, matches.primaryGenreId))
@@ -380,6 +480,28 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     }
   }
 
+  let flipSourcePayload: {
+    id: string;
+    label: string;
+    url: string;
+    durationSec: number | null;
+  } | null = null;
+  if (row.flipSourceId) {
+    const [fs] = await d
+      .select()
+      .from(flipSources)
+      .where(eq(flipSources.id, row.flipSourceId))
+      .limit(1);
+    if (fs) {
+      flipSourcePayload = {
+        id: fs.id,
+        label: fs.label,
+        url: fs.url,
+        durationSec: fs.durationSec ?? null,
+      };
+    }
+  }
+
   return c.json({
     id: row.id,
     mode: row.mode,
@@ -391,6 +513,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     samplePack: packPayload,
+    flipSource: flipSourcePayload,
     currentPhase: phase?.current_phase ?? null,
     transitionsAt: phase ? new Date(phase.transitions_at).getTime() : null,
   });

@@ -64,6 +64,13 @@
       "when": 1776959407345,
       "tag": "0008_magical_polaris",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1776960064803,
+      "tag": "0009_nervous_amazoness",
+      "breakpoints": true
     }
   ]
 }

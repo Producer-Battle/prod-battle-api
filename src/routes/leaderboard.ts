@@ -38,7 +38,7 @@ const leaderboardRoute = createRoute({
   summary: 'Scoreboard for a given mode + optional genre',
   request: {
     query: z.object({
-      mode: z.enum(['quickplay', 'ranked', 'private', 'tournament', 'practice']).optional(),
+      mode: z.enum(['quickplay', 'ranked', 'private', 'tournament', 'practice', 'flip']).optional(),
       genreSlug: z.string().optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }),

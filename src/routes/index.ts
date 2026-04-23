@@ -4,6 +4,7 @@ import { adminRoutes } from './admin.js';
 import { arRoutes } from './ar.js';
 import { dailyChallengeRoutes } from './daily-challenge.js';
 import { feedRoutes } from './feed.js';
+import { flipSourcesRoutes } from './flip-sources.js';
 import { genresRoutes } from './genres.js';
 import { healthRoutes } from './health.js';
 import { leaderboardRoutes } from './leaderboard.js';
@@ -29,4 +30,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', leaderboardRoutes);
   app.route('/', dailyChallengeRoutes);
   app.route('/', adminFlipSourcesRoutes);
+  app.route('/', flipSourcesRoutes);
 }
