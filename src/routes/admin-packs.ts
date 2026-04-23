@@ -134,11 +134,11 @@ const regeneratePackRoute = createRoute({
   method: 'post',
   path: '/admin/sample-packs/{id}/regenerate',
   tags: ['admin', 'sample-packs'],
-  summary: 'Delete S3 stems for this pack and re-fetch fresh ones from Freesound',
+  summary: 'Kick off background regeneration of a pack from Freesound',
   request: { params: z.object({ id: z.string().uuid() }) },
   responses: {
-    200: {
-      description: 'Regenerated pack',
+    202: {
+      description: 'Accepted - samples cleared; background task refills and swaps them in',
       content: { 'application/json': { schema: PackRow } },
     },
     401: {
@@ -151,6 +151,9 @@ const regeneratePackRoute = createRoute({
   },
 });
 
+// Same fire-and-forget shape as the generate route. Clearing samples to
+// [] is the "generating" signal the UI polls on; stemCount flips back
+// to N when the refill completes.
 adminPacksRoutes.openapi(regeneratePackRoute, async (c) => {
   const g = requireAdmin(c);
   if (!g.ok) return c.json(g.body, g.status);
@@ -180,7 +183,6 @@ adminPacksRoutes.openapi(regeneratePackRoute, async (c) => {
 
   if (!genre) return c.json({ error: 'genre_not_found', message: 'Genre not found.' }, 404);
 
-  // Determine stem types: prefer genre.stemTypes, fall back to GENRE_STEMS map.
   const stemTypes: readonly string[] =
     (genre.stemTypes && genre.stemTypes.length > 0 ? genre.stemTypes : null) ??
     GENRE_STEMS[genre.slug] ??
@@ -196,26 +198,13 @@ adminPacksRoutes.openapi(regeneratePackRoute, async (c) => {
     );
   }
 
-  // Delete existing S3 objects for this pack's stems (best-effort).
+  // Snapshot the old samples list so we can delete their S3 objects in
+  // the background. Clear samples immediately so the UI shows "generating"
+  // state on the next poll.
   const existingSamples = pack.samples as SamplePackItem[];
-  for (const sample of existingSamples) {
-    const key = keyFromUrl(sample.url);
-    if (key) {
-      try {
-        await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
-      } catch (err) {
-        console.warn(`[regen] failed to delete S3 object ${key}:`, (err as Error).message);
-      }
-    }
-  }
-
-  // Fetch fresh stems.
-  const items = await generatePackItems(genre.slug, stemTypes);
-
-  // Update the pack row in place (same id).
   const [updated] = await d
     .update(samplePacks)
-    .set({ samples: items as SamplePackItem[], createdBy: g.userId })
+    .set({ samples: [] as SamplePackItem[], createdBy: g.userId })
     .where(eq(samplePacks.id, id))
     .returning({
       id: samplePacks.id,
@@ -228,6 +217,30 @@ adminPacksRoutes.openapi(regeneratePackRoute, async (c) => {
 
   if (!updated) return c.json({ error: 'update_failed', message: 'Could not update pack.' }, 404);
 
+  const packId = updated.id;
+  const slug = genre.slug;
+  void (async () => {
+    for (const sample of existingSamples) {
+      const key = keyFromUrl(sample.url);
+      if (!key) continue;
+      try {
+        await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+      } catch (err) {
+        console.warn(`[regen] failed to delete S3 object ${key}:`, (err as Error).message);
+      }
+    }
+    try {
+      const items = await generatePackItems(slug, stemTypes);
+      await db()
+        .update(samplePacks)
+        .set({ samples: items as SamplePackItem[] })
+        .where(eq(samplePacks.id, packId));
+      console.log(`[admin-packs] pack ${updated.name} regenerated (${items.length} stems)`);
+    } catch (err) {
+      console.error(`[admin-packs] pack ${updated.name} regeneration failed:`, err);
+    }
+  })();
+
   return c.json(
     {
       id: updated.id,
@@ -236,11 +249,11 @@ adminPacksRoutes.openapi(regeneratePackRoute, async (c) => {
       genreName: genre.name,
       kind: updated.kind,
       name: updated.name,
-      stemCount: (updated.samples as SamplePackItem[]).length,
+      stemCount: 0,
       createdAt: updated.createdAt.toISOString(),
       createdByHandle: null,
     },
-    200,
+    202,
   );
 });
 
@@ -250,11 +263,11 @@ const generatePoolPackRoute = createRoute({
   method: 'post',
   path: '/admin/genres/{id}/generate-pool-pack',
   tags: ['admin', 'sample-packs'],
-  summary: 'Generate a new pool pack for a genre from Freesound',
+  summary: 'Kick off background pool-pack generation for a genre',
   request: { params: z.object({ id: z.string().uuid() }) },
   responses: {
-    201: {
-      description: 'Created pack',
+    202: {
+      description: 'Accepted - pack row created with empty samples; background task fills it in',
       content: { 'application/json': { schema: PackRow } },
     },
     401: {
@@ -267,6 +280,12 @@ const generatePoolPackRoute = createRoute({
   },
 });
 
+// Generation is synchronous inside the container (Freesound + ffmpeg +
+// S3 upload per stem) and can take ~30s for a full genre. Holding the
+// HTTP request open that long makes the admin UI feel frozen, so we
+// return 202 with a placeholder pack row (samples=[]) and finish the
+// work in the background. The client polls GET /admin/sample-packs and
+// sees stemCount go from 0 to N when the pack is ready.
 adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
   const g = requireAdmin(c);
   if (!g.ok) return c.json(g.body, g.status);
@@ -297,7 +316,6 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
     );
   }
 
-  // Count existing pool packs to name this one sequentially.
   const [countRow] = await d
     .select({ n: count() })
     .from(samplePacks)
@@ -306,8 +324,6 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
   const packNumber = (countRow?.n ?? 0) + 1;
   const packName = `${genre.slug}-pool-${packNumber}`;
 
-  const items = await generatePackItems(genre.slug, stemTypes);
-
   const [row] = await d
     .insert(samplePacks)
     .values({
@@ -315,7 +331,7 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
       kind: 'pool',
       name: packName,
       createdBy: g.userId,
-      samples: items as SamplePackItem[],
+      samples: [] as SamplePackItem[],
     })
     .returning({
       id: samplePacks.id,
@@ -328,6 +344,24 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
 
   if (!row) return c.json({ error: 'create_failed', message: 'Could not create pack.' }, 404);
 
+  // Fire-and-forget. Not awaited so the HTTP response goes out immediately.
+  // If it fails, we log and leave the empty pack row as a clear signal in
+  // the admin UI that a retry (regenerate) is needed.
+  const packId = row.id;
+  const slug = genre.slug;
+  void (async () => {
+    try {
+      const items = await generatePackItems(slug, stemTypes);
+      await db()
+        .update(samplePacks)
+        .set({ samples: items as SamplePackItem[] })
+        .where(eq(samplePacks.id, packId));
+      console.log(`[admin-packs] pool pack ${packName} ready (${items.length} stems)`);
+    } catch (err) {
+      console.error(`[admin-packs] pool pack ${packName} generation failed:`, err);
+    }
+  })();
+
   return c.json(
     {
       id: row.id,
@@ -336,11 +370,11 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
       genreName: genre.name,
       kind: row.kind,
       name: row.name,
-      stemCount: (row.samples as SamplePackItem[]).length,
+      stemCount: 0,
       createdAt: row.createdAt.toISOString(),
       createdByHandle: null,
     },
-    201,
+    202,
   );
 });
 

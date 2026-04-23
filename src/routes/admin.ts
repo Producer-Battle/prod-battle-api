@@ -16,6 +16,7 @@ import {
   genres,
   matches,
   samplePacks,
+  sessions,
   userRole as userRoleEnum,
   users,
 } from '../db/schema.js';
@@ -861,6 +862,11 @@ adminRoutes.openapi(deleteUserRoute, async (c) => {
     .returning({ id: users.id });
 
   if (!row) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+
+  // Kill every active session so the browser is logged out on next request
+  // instead of carrying a stale cookie for the lifetime of the session.
+  await d.delete(sessions).where(eq(sessions.userId, id));
+
   return c.body(null, 204);
 });
 
