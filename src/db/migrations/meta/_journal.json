@@ -50,6 +50,13 @@
       "when": 1776892458815,
       "tag": "0006_messy_shotgun",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1776952528800,
+      "tag": "0007_remarkable_mentallo",
+      "breakpoints": true
     }
   ]
 }

@@ -73,7 +73,13 @@ export const DEFAULT_SAMPLE_MODE: Record<MatchMode, 'none' | 'generated' | 'uplo
 // seeder and by the match-start generator to pick one of each stem type.
 export const GENRE_STEMS: Record<string, readonly string[]> = {
   'hip-hop-trap': ['kick', 'snare', 'hihat', '808', 'clap', 'openhat', 'perc', 'fx'],
-  house: ['kick', 'snare', 'hihat', 'bass', 'lead', 'pad', 'clap', 'fx'],
   phonk: ['kick', 'snare', 'hihat', 'cowbell', '808', 'vocal', 'fx'],
+  house: ['kick', 'snare', 'hihat', 'bass', 'lead', 'pad', 'clap', 'fx'],
+  amapiano: ['kick', 'snare', 'hihat', 'bass', 'pad', 'lead', 'perc', 'vocal'],
+  'afro-house': ['kick', 'snare', 'hihat', 'bass', 'perc', 'pad', 'vocal', 'fx'],
+  'drum-and-bass': ['kick', 'snare', 'hihat', 'bass', 'lead', 'pad', 'fx'],
+  dubstep: ['kick', 'snare', 'bass', 'lead', 'fx'],
+  techno: ['kick', 'snare', 'hihat', 'bass', 'lead', 'pad', 'perc', 'fx'],
   hardstyle: ['kick', 'screech', 'zap', 'reverse', 'vocal'],
+  'lo-fi': ['kick', 'snare', 'hihat', 'bass', 'pad', 'vocal', 'fx'],
 };

@@ -388,6 +388,7 @@ const createSystemGenreRoute = createRoute({
               .max(48)
               .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/),
             name: z.string().min(2).max(64),
+            stemTypes: z.array(z.string()).min(3).max(12),
           }),
         },
       },
@@ -439,6 +440,7 @@ adminRoutes.openapi(createSystemGenreRoute, async (c) => {
       kind: 'system',
       status: 'active',
       createdBy: g.userId,
+      stemTypes: body.stemTypes,
     })
     .returning({ id: genres.id, slug: genres.slug, name: genres.name });
 

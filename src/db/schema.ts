@@ -143,6 +143,12 @@ export const genres = pgTable(
     // (usable by everyone) or status='archived' if they didn't hit the bar.
     // Null for system genres + user genres already decided.
     votingEndsAt: timestamp({ withTimezone: true }),
+    // Ordered list of stem labels (e.g. ['kick','snare','808','fx']) that
+    // sample packs attached to this genre are expected to supply. Drives
+    // the pack-upload stem picker and match-start pack generation.
+    // Required on user-created genres; legacy system genres fall back to
+    // GENRE_STEMS in matchmaking/defaults.ts when NULL.
+    stemTypes: text().array(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('genres_slug_unique').on(t.slug)],

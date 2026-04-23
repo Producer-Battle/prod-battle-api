@@ -43,6 +43,9 @@ async function seedGenres(d: ReturnType<typeof db>): Promise<void> {
         kind: 'system',
         formatConfig: g.formatConfig,
         status: 'active',
+        // Mirror GENRE_STEMS onto the row so user-pack uploads and match
+        // generation read from a single source of truth going forward.
+        stemTypes: GENRE_STEMS[g.slug] as string[] | undefined,
       })
       .onConflictDoNothing({ target: genres.slug });
   }

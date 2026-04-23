@@ -7,6 +7,25 @@ export const genresRoutes = new OpenAPIHono();
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
+const STEM_TYPES = [
+  'kick',
+  'snare',
+  'hihat',
+  'openhat',
+  'clap',
+  'perc',
+  'fx',
+  '808',
+  'bass',
+  'lead',
+  'pad',
+  'vocal',
+  'zap',
+  'screech',
+  'reverse',
+  'cowbell',
+] as const;
+
 const GenreItem = z
   .object({
     id: z.string().uuid(),
@@ -22,6 +41,7 @@ const GenreItem = z
     // uploaded). Zero until at least one pack lands, so a fresh genre is
     // visibly empty in the UI.
     packCount: z.number().int(),
+    stemTypes: z.array(z.string()).nullable(),
   })
   .openapi('Genre');
 
@@ -34,6 +54,9 @@ const CreateGenreBody = z
       .max(32)
       .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'lowercase letters, digits, and single dashes'),
     name: z.string().min(3).max(64),
+    // At least 3 stems so a sample pack is meaningful, max 12 to keep the
+    // match-generation pick-per-type step fast.
+    stemTypes: z.array(z.enum(STEM_TYPES)).min(3).max(12),
   })
   .openapi('CreateGenreBody');
 
@@ -81,6 +104,7 @@ genresRoutes.openapi(listRoute, async (c) => {
       status: genres.status,
       createdBy: genres.createdBy,
       votingEndsAt: genres.votingEndsAt,
+      stemTypes: genres.stemTypes,
     })
     .from(genres)
     .where(kind ? and(eq(genres.kind, kind), statusFilter) : statusFilter)
@@ -187,6 +211,7 @@ genresRoutes.openapi(createRouteDef, async (c) => {
       status: 'proposed',
       createdBy: user.id,
       votingEndsAt,
+      stemTypes: body.stemTypes as string[],
     })
     .returning();
 
@@ -206,6 +231,7 @@ genresRoutes.openapi(createRouteDef, async (c) => {
       voteCount: 0,
       packCount: 0,
       iVoted: false,
+      stemTypes: row.stemTypes ?? null,
     },
     201,
   );

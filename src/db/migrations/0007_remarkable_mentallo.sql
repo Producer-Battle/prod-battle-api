@@ -1,0 +1,1 @@
+ALTER TABLE "genres" ADD COLUMN "stem_types" text[];
