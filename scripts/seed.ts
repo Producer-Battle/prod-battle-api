@@ -35,6 +35,10 @@ const DEMO_PACKS_PER_GENRE = 3;
 async function seedGenres(d: ReturnType<typeof db>): Promise<void> {
   console.log('[seed] system genres…');
   for (const g of MVP_SYSTEM_GENRES) {
+    // Upsert: the registry is authoritative for system genres. Update name /
+    // formatConfig / stemTypes on every run so prod catches up when the
+    // registry changes. User-proposed genres (kind='user') have their own
+    // slugs and are never touched by this seeder.
     await d
       .insert(genres)
       .values({
@@ -43,11 +47,16 @@ async function seedGenres(d: ReturnType<typeof db>): Promise<void> {
         kind: 'system',
         formatConfig: g.formatConfig,
         status: 'active',
-        // Mirror GENRE_STEMS onto the row so user-pack uploads and match
-        // generation read from a single source of truth going forward.
         stemTypes: GENRE_STEMS[g.slug] as string[] | undefined,
       })
-      .onConflictDoNothing({ target: genres.slug });
+      .onConflictDoUpdate({
+        target: genres.slug,
+        set: {
+          name: g.name,
+          formatConfig: g.formatConfig,
+          stemTypes: GENRE_STEMS[g.slug] as string[] | undefined,
+        },
+      });
   }
 }
 

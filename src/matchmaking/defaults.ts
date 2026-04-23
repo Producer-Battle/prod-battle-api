@@ -3,9 +3,7 @@
 // Other modes use opinionated defaults that "feel right" for the mode.
 
 export const PRIVATE_SUBMIT_SECONDS_PRESETS = [
-  60, // 1 min - speedrun
-  120, // 2 min
-  300, // 5 min
+  300, // 5 min - shortest allowed
   600, // 10 min
   1200, // 20 min
   1800, // 30 min
