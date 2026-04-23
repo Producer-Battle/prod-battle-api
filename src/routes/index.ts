@@ -4,6 +4,7 @@ import { arRoutes } from './ar.js';
 import { feedRoutes } from './feed.js';
 import { genresRoutes } from './genres.js';
 import { healthRoutes } from './health.js';
+import { leaderboardRoutes } from './leaderboard.js';
 import { matchesRoutes } from './matches.js';
 import { phasesRoutes } from './phases.js';
 import { roomActionsRoutes } from './room-actions.js';
@@ -23,4 +24,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', arRoutes);
   app.route('/', adminRoutes);
   app.route('/', userPacksRoutes);
+  app.route('/', leaderboardRoutes);
 }
