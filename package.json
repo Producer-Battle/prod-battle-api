@@ -19,6 +19,8 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:reset": "tsx scripts/reset-db.ts",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
     "openapi:emit": "tsx scripts/emit-openapi.ts"
