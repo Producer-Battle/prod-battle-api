@@ -206,6 +206,29 @@ export const samplePacks = pgTable('sample_packs', {
 });
 
 /*
+ * Flip sources - single audio loops (vocal chops, melody loops) that seed
+ * Sample Flip matches. One source, everyone flips it their way. Stored in
+ * S3 under flips/{id}.wav so they stay separate from stems/{...} packs.
+ * genreId is optional because most flip sources (a vocal hook, a melody)
+ * are genre-agnostic at source and get tagged at match-creation time.
+ */
+export const flipSources = pgTable('flip_sources', {
+  id: uuid().primaryKey().defaultRandom(),
+  label: text().notNull(),
+  genreId: uuid().references(() => genres.id, { onDelete: 'set null' }),
+  url: text().notNull(),
+  // Where the audio came from. 'freesound' = CC0 pulled via the admin
+  // generator. 'upload' = admin uploaded a custom file.
+  source: text().notNull(),
+  // Upstream id for dedup + attribution (Freesound sound id, etc.).
+  sourceId: text(),
+  durationSec: integer(),
+  active: boolean().notNull().default(true),
+  createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
  * Matches - solo practice, 1v1 duels, team battles up to 5v5, FFA up to 8.
  * Invariant: team_size * team_count <= 10.
  *   Practice → team_size=1, team_count=1   (solo)
