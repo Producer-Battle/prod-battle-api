@@ -56,6 +56,8 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            APP_VERSION=${{ needs.meta.outputs.primary_tag }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}

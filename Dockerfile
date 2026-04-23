@@ -16,6 +16,8 @@ COPY scripts ./scripts
 RUN pnpm build
 
 FROM base AS runtime
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 ENV NODE_ENV=production
 ENV PORT=8080
 RUN addgroup -S app && adduser -S -G app app

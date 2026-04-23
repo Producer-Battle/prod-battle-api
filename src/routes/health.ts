@@ -23,10 +23,15 @@ const route = createRoute({
   },
 });
 
+// APP_VERSION is baked in at Docker build time (Dockerfile ARG, populated
+// from CI's short git SHA in .github/workflows/deploy.yml). Falls back to
+// 'dev' for local `pnpm dev` where no build arg was supplied.
+const APP_VERSION = process.env.APP_VERSION ?? 'dev';
+
 healthRoutes.openapi(route, (c) =>
   c.json({
     status: 'ok' as const,
-    version: process.env.npm_package_version ?? '0.0.0',
+    version: APP_VERSION,
     uptimeSec: Math.round(process.uptime()),
   }),
 );
