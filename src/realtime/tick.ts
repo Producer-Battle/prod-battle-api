@@ -5,7 +5,7 @@
 
 import { and, lte, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { battlePhases, matches } from '../db/schema.js';
+import { battlePhases, matches, votes } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { nextPhase } from '../room/state.js';
 import { onEnterPhase } from '../room/transitions.js';
@@ -46,6 +46,41 @@ async function tick(): Promise<void> {
       continue;
     }
 
+    // Omegle-style voting: when the vote phase times out, every seated
+    // player must have cast their votes — otherwise the round is voided.
+    // maybeAdvanceAfterVote (room/transitions.ts) fires this same transition
+    // early when the threshold is met, so reaching this branch *on the
+    // timer* means some player didn't vote in time.
+    //
+    // We wipe the accrued votes so the results phase tallies an empty set
+    // (no winner assigned, finalRank stays NULL). The frontend reads
+    // matches.voteOutcome = 'incomplete' off the broadcast event below.
+    let voteOutcome: 'complete' | 'incomplete' = 'complete';
+    if (row.currentPhase === 'vote' && next === 'results') {
+      const outcomeRows = (await d.execute<{ seated: number; full: number }>(sql`
+        WITH s AS (
+          SELECT COUNT(*)::int AS n FROM match_players
+           WHERE match_id = ${row.matchId} AND is_spectator = false
+        ),
+        voter_counts AS (
+          SELECT v.voter_id, COUNT(*)::int AS votes_cast
+            FROM votes v
+           WHERE v.match_id = ${row.matchId}
+           GROUP BY v.voter_id
+        )
+        SELECT (SELECT n FROM s)::int AS seated,
+               (SELECT COUNT(*)::int FROM voter_counts
+                 WHERE votes_cast >= GREATEST((SELECT n FROM s) - 1, 0)) AS full
+      `)) as unknown as [{ seated: number; full: number }];
+      const seated = outcomeRows[0]?.seated ?? 0;
+      const full = outcomeRows[0]?.full ?? 0;
+      if (seated > 0 && full < seated) {
+        voteOutcome = 'incomplete';
+        await d.delete(votes).where(sql`${votes.matchId} = ${row.matchId}`);
+        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) — discarded`);
+      }
+    }
+
     // Determine how long the next phase lasts.
     let durationSeconds: number;
     if (next === 'submit') {
@@ -76,6 +111,7 @@ async function tick(): Promise<void> {
       matchId: row.matchId,
       phase: next,
       transitionsAt: transitionsAt.getTime(),
+      ...(row.currentPhase === 'vote' && next === 'results' ? { voteOutcome } : {}),
     });
 
     // Also update match status so REST reads reflect the current phase.
