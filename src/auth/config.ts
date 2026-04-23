@@ -44,6 +44,10 @@ export const auth = betterAuth({
 
   secret: authSecret,
   baseURL: baseUrl,
+  // Without this, better-auth defaults to `/api/auth/*` — but we mount at
+  // `/auth/*` in server.ts (and the web client hits `/auth/*` directly).
+  // Align them so /auth/sign-up/email, /auth/get-session, etc. resolve.
+  basePath: '/auth',
   trustedOrigins: (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
     .split(',')
     .map((s) => s.trim())
