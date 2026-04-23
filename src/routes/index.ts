@@ -9,6 +9,7 @@ import { phasesRoutes } from './phases.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
 import { submissionsRoutes } from './submissions.js';
+import { userPacksRoutes } from './user-packs.js';
 
 export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', healthRoutes);
@@ -21,4 +22,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', phasesRoutes);
   app.route('/', arRoutes);
   app.route('/', adminRoutes);
+  app.route('/', userPacksRoutes);
 }
