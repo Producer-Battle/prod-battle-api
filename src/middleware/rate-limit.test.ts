@@ -33,7 +33,12 @@ import { ANON_MATCH_LIMIT, _resetClientForTest, requireMatchQuota } from './rate
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const FAKE_ANON_ID = 'test-anon-uuid-1234';
-const FAKE_USER = { id: 'user-abc', email: 'test@example.com' };
+const FAKE_USER = {
+  id: 'user-abc',
+  email: 'test@example.com',
+  handle: 'test',
+  role: 'producer' as const,
+};
 
 /**
  * Build a minimal Hono app that:

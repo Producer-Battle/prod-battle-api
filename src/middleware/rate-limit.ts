@@ -45,16 +45,9 @@ function getRedisClient(): Redis {
  */
 export const ANON_MATCH_LIMIT = 3;
 
-// ─── Hono variable extension ─────────────────────────────────────────────────
-
-// `user` is set by the (parallel) auth/session middleware. We declare only
-// the shape we consume here — never import auth code directly.
-declare module 'hono' {
-  interface ContextVariableMap {
-    // biome-ignore lint/suspicious/noExplicitAny: auth middleware owns this type
-    user?: any;
-  }
-}
+// `c.var.user` is declared by src/middleware/session.ts. We just consume
+// it here as a truthy-check, so we don't need our own ContextVariableMap
+// augmentation.
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
