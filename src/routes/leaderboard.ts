@@ -1,7 +1,7 @@
 // GET /leaderboard
 //
 // Simple scoreboard derived from the submissions + matches tables. No
-// pre-computed ranking rows — we aggregate on read so new matches show
+// pre-computed ranking rows - we aggregate on read so new matches show
 // up immediately, at the cost of one group-by per request. Fine while the
 // match volume is small; swap for a materialised view if it ever isn't.
 //

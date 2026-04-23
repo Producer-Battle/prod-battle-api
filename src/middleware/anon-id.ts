@@ -17,7 +17,7 @@ import { env } from '../env.js';
 const MAX_AGE = 31_536_000;
 
 // Extend Hono's variable map so TypeScript knows about `c.var.anonId`.
-// Other middleware (auth, etc.) may add `user` separately — we only declare
+// Other middleware (auth, etc.) may add `user` separately - we only declare
 // what this file owns.
 declare module 'hono' {
   interface ContextVariableMap {

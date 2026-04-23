@@ -10,7 +10,7 @@
 // Prereq: FREESOUND_API_KEY set, Postgres reachable, Object Storage reachable,
 // ffmpeg installed locally (for the dev run; prod uses the job's container).
 //
-// Queries per stemType — kept simple; tune over time:
+// Queries per stemType - kept simple; tune over time:
 //   kick    → "kick oneshot"
 //   snare   → "snare oneshot"
 //   hihat   → "hihat closed"
@@ -96,7 +96,7 @@ async function main() {
   for (const g of genreRows) {
     const stems = GENRE_STEMS[g.slug];
     if (!stems) {
-      console.log(`[stems] skipping ${g.slug} — no stem set defined`);
+      console.log(`[stems] skipping ${g.slug} - no stem set defined`);
       continue;
     }
 
@@ -113,7 +113,7 @@ async function main() {
         for (let i = 0; i < STEMS_PER_TYPE; i++) {
           const stem = await fetchAndStoreStem(g.slug, stemType, i);
           if (stem) items.push(stem);
-          // Respect Freesound's rate limit — sleep 150ms between requests.
+          // Respect Freesound's rate limit - sleep 150ms between requests.
           await new Promise((r) => setTimeout(r, 150));
         }
       }

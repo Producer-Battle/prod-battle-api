@@ -47,7 +47,7 @@ async function tick(): Promise<void> {
     }
 
     // Omegle-style voting: when the vote phase times out, every seated
-    // player must have cast their votes — otherwise the round is voided.
+    // player must have cast their votes - otherwise the round is voided.
     // maybeAdvanceAfterVote (room/transitions.ts) fires this same transition
     // early when the threshold is met, so reaching this branch *on the
     // timer* means some player didn't vote in time.
@@ -77,7 +77,7 @@ async function tick(): Promise<void> {
       if (seated > 0 && full < seated) {
         voteOutcome = 'incomplete';
         await d.delete(votes).where(sql`${votes.matchId} = ${row.matchId}`);
-        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) — discarded`);
+        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) - discarded`);
       }
     }
 

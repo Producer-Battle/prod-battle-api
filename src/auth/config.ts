@@ -1,13 +1,13 @@
 // better-auth instance for the prod-battle API.
 //
 // Providers:
-//   - email + password (no verification gate — user.emailVerified defaults to
+//   - email + password (no verification gate - user.emailVerified defaults to
 //     true so sign-up lands the user straight into a session)
-//   - Google OAuth (conditionally enabled — only if both env vars are set)
+//   - Google OAuth (conditionally enabled - only if both env vars are set)
 //
 // Drizzle adapter backs all persistence (users, accounts, sessions,
 // verifications) against the same Postgres we already use. The `users`
-// table is shared with the rest of the app — better-auth writes email /
+// table is shared with the rest of the app - better-auth writes email /
 // emailVerified / handle (as `name`) / avatarUrl (as `image`) via the
 // field mapping below.
 
@@ -43,7 +43,7 @@ export const auth = betterAuth({
 
   secret: authSecret,
   baseURL: baseUrl,
-  // Without this, better-auth defaults to `/api/auth/*` — but we mount at
+  // Without this, better-auth defaults to `/api/auth/*` - but we mount at
   // `/auth/*` in server.ts (and the web client hits `/auth/*` directly).
   // Align them so /auth/sign-up/email, /auth/get-session, etc. resolve.
   basePath: '/auth',
@@ -54,7 +54,7 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // No verification friction — sign-up returns a live session immediately.
+    // No verification friction - sign-up returns a live session immediately.
     requireEmailVerification: false,
     minPasswordLength: 8,
     maxPasswordLength: 128,

@@ -1,6 +1,6 @@
 // Tests for requireMatchQuota middleware.
 //
-// All Redis calls are mocked — no live Redis required.
+// All Redis calls are mocked - no live Redis required.
 // The test app wires anonId middleware manually so we exercise the real
 // middleware chain without importing auth code.
 
@@ -114,7 +114,7 @@ describe('requireMatchQuota', () => {
       expect(mockExpire).toHaveBeenCalledOnce();
       expect(mockExpire).toHaveBeenCalledWith(`rl:match:create:${FAKE_ANON_ID}`, 86_400);
 
-      // Second request — EXPIRE must NOT be called again.
+      // Second request - EXPIRE must NOT be called again.
       mockIncr.mockResolvedValueOnce(2);
       await postMatch(app);
       expect(mockExpire).toHaveBeenCalledOnce(); // still once total
@@ -138,7 +138,7 @@ describe('requireMatchQuota', () => {
   });
 
   describe('authenticated request', () => {
-    it('bypasses the quota entirely — Redis is never touched', async () => {
+    it('bypasses the quota entirely - Redis is never touched', async () => {
       const app = buildApp({ authenticated: true });
 
       // Even if Redis would return a very high count, auth bypasses it.

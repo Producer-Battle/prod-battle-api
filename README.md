@@ -6,13 +6,13 @@ OpenAPI) and WebSockets from the same process.
 
 ## Stack
 
-- **Hono 4** + `@hono/zod-openapi` — code-first OpenAPI from Zod schemas
-- **Node 22** — plain CommonJS/ESM, no Bun (for CI simplicity)
+- **Hono 4** + `@hono/zod-openapi` - code-first OpenAPI from Zod schemas
+- **Node 22** - plain CommonJS/ESM, no Bun (for CI simplicity)
 - **drizzle-orm** + `drizzle-kit` on Postgres 16
-- **ioredis** — pub/sub, hot match state, tick-worker leader election
-- **better-auth** — sessions in Postgres
+- **ioredis** - pub/sub, hot match state, tick-worker leader election
+- **better-auth** - sessions in Postgres
 - **Scaleway Object Storage** via AWS SDK v3 (S3-compatible)
-- **Scaleway Serverless Jobs** — ffmpeg transcoder (defined in `jobs/ffmpeg/`)
+- **Scaleway Serverless Jobs** - ffmpeg transcoder (defined in `jobs/ffmpeg/`)
 
 ## Layout
 
@@ -30,7 +30,7 @@ src/
   ranking/            Glicko-2
   audio/              presigned S3 uploads, transcode job dispatch
   db/
-    schema.ts         drizzle schema — single source of truth for Postgres
+    schema.ts         drizzle schema - single source of truth for Postgres
     client.ts         drizzle client factory
     migrations/       drizzle-kit generated SQL
 
@@ -41,10 +41,10 @@ scripts/              openapi emit + publish
 
 ## Data model highlights
 
-- **Matches support 1v1, 2v2, 3v3, 4v4, FFA** — stored as `team_size` × `team_count` with a check constraint `team_size * team_count <= 8`.
+- **Matches support 1v1, 2v2, 3v3, 4v4, FFA** - stored as `team_size` × `team_count` with a check constraint `team_size * team_count <= 8`.
 - **Genres have two tiers**: `system` (admin-curated, has `format_config`) and `user` (UGC tags). Ranked/quickplay requires `system`; private rooms + submission tags can use either.
 - **Private rooms** set `primary_genre_id` plus optional `allowed_genre_ids[]` for rotation.
-- **Submissions persist** — every match track lives on the producer's profile + genre leaderboard.
+- **Submissions persist** - every match track lives on the producer's profile + genre leaderboard.
 - **A&R role** with admin-verified applications (`ar_applications`) and watchlists.
 
 See `src/db/schema.ts` for the full picture.

@@ -4,16 +4,16 @@
 // hip-hop/trap still the volume leader, amapiano + afro-house breaking
 // mainstream, phonk + drill still hot on TikTok, DnB/dubstep on a bass-
 // music resurgence, lo-fi owning the chill playlists). Keep this list
-// tight — an operator can add more via POST /admin/genres once the DB
+// tight - an operator can add more via POST /admin/genres once the DB
 // is live.
 //
 // Each entry's format_config drives the match flow:
-//   submission.maxSeconds  — duration cap per submission
-//   vote.model             — 'community' | 'peer' | 'judge-panel'
-//   phases.*               — submit / reveal / vote timers in seconds
+//   submission.maxSeconds  - duration cap per submission
+//   vote.model             - 'community' | 'peer' | 'judge-panel'
+//   phases.*               - submit / reveal / vote timers in seconds
 //
 // User-created genres (kind='user', createdBy=<uuid>) are independent
-// of this list — they flow through POST /genres → community voting →
+// of this list - they flow through POST /genres → community voting →
 // promotion.
 
 import type { GenreFormatConfig } from '../db/schema.js';

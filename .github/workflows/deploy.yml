@@ -105,7 +105,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [[ -z "$DATABASE_URL" ]]; then
-            echo "DATABASE_URL secret not set — skipping migrate (bootstrap)."
+            echo "DATABASE_URL secret not set - skipping migrate (bootstrap)."
             exit 0
           fi
           pnpm db:migrate
@@ -138,7 +138,7 @@ jobs:
           PRIMARY_TAG: ${{ needs.meta.outputs.primary_tag }}
         run: |
           if [[ -z "$CONTAINER_ID" ]]; then
-            echo "SCW_CONTAINER_ID secret not set — skipping redeploy."
+            echo "SCW_CONTAINER_ID secret not set - skipping redeploy."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -185,7 +185,7 @@ jobs:
         run: |
           # Poll for up to 5 minutes. Scaleway transitions: pending -> ready (ok)
           # or pending -> error (bad). Scaleway is known to flap between pending
-          # and "internal error" during the first ~10s of a PATCH — so only fail
+          # and "internal error" during the first ~10s of a PATCH - so only fail
           # after we've seen `error` persist across 3 consecutive polls (~15s).
           error_streak=0
           for i in $(seq 1 60); do

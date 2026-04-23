@@ -27,7 +27,7 @@ const envSchema = z.object({
 
   AUTH_SECRET: z.string().min(32).optional(),
   // Comma-separated list of trusted origins (see server.ts). Kept as a
-  // plain string — validating each entry as a URL is the caller's job.
+  // plain string - validating each entry as a URL is the caller's job.
   AUTH_TRUSTED_ORIGINS: z.string().optional(),
   WEB_ORIGIN: z.string().optional(),
 
@@ -36,7 +36,7 @@ const envSchema = z.object({
   // In local dev defaults to http://localhost:8080.
   AUTH_BASE_URL: z.string().optional(),
 
-  // Google OAuth — optional. If unset, the Google sign-in button on the
+  // Google OAuth - optional. If unset, the Google sign-in button on the
   // web is still rendered but the `/auth/callback/google` endpoint returns
   // 503 "google_oauth_not_configured". Setting both enables the provider.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),

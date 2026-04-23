@@ -1,4 +1,4 @@
-// Default seed — the minimum the app needs to work from a fresh DB.
+// Default seed - the minimum the app needs to work from a fresh DB.
 //
 // Today that's just the system genre catalogue. No demo users, no demo
 // matches, no placeholder sample packs. Real content is created by real
@@ -11,7 +11,7 @@
 //
 //   pnpm tsx scripts/seed.ts --with-demo
 //
-// Idempotent — running any variant twice is safe.
+// Idempotent - running any variant twice is safe.
 
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../src/db/client.js';
@@ -65,7 +65,7 @@ async function seedDemoStems(d: ReturnType<typeof db>): Promise<void> {
       .where(eq(samplePacks.genreId, genre.id));
 
     if (existingPacks.some((r) => r.kind === 'pool')) {
-      console.log(`[seed] pool stems for "${genreSlug}" already exist — skipping`);
+      console.log(`[seed] pool stems for "${genreSlug}" already exist - skipping`);
       continue;
     }
 
@@ -115,7 +115,7 @@ async function seedDemoContent(d: ReturnType<typeof db>): Promise<void> {
       .insert(producerProfiles)
       .values({
         userId: u.id,
-        bio: `${u.handle} — demo producer`,
+        bio: `${u.handle} - demo producer`,
         openToAr: true,
       })
       .onConflictDoNothing({ target: producerProfiles.userId });
@@ -132,7 +132,7 @@ async function seedDemoContent(d: ReturnType<typeof db>): Promise<void> {
     .from(matches)
     .where(sql`${matches.roomCode} = 'DEMO01'`);
   if (existing.length > 0) {
-    console.log('[seed:demo] demo match already exists — skipping');
+    console.log('[seed:demo] demo match already exists - skipping');
     return;
   }
 

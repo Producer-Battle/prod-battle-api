@@ -1,11 +1,11 @@
-// Admin endpoints — all gated behind role='admin'.
+// Admin endpoints - all gated behind role='admin'.
 //
 // Scope: give a trusted operator enough handles to keep the platform
 // running day-to-day without writing SQL: promote/demote users,
 // create system genres + packs, peek at live matches.
 //
 // Shape: every handler rejects anyone without role=admin via c.var.user,
-// returns structured JSON (no HTML admin panel here — frontend in
+// returns structured JSON (no HTML admin panel here - frontend in
 // prod-battle-web wires the dashboard against these endpoints).
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';

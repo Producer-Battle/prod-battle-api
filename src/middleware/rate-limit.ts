@@ -11,7 +11,7 @@
 // warning is logged. This keeps the API healthy during Redis restarts.
 //
 // To raise the limit, change ANON_MATCH_LIMIT below and redeploy. No Redis
-// key migrations are needed — the new limit applies to keys created after the
+// key migrations are needed - the new limit applies to keys created after the
 // deploy; existing keys expire within 24 h at most.
 
 import { createMiddleware } from 'hono/factory';
@@ -65,7 +65,7 @@ export function requireMatchQuota() {
 
     const anonId: string | undefined = c.var.anonId;
     if (!anonId) {
-      // anonId middleware not wired — fail-open so we don't block valid traffic.
+      // anonId middleware not wired - fail-open so we don't block valid traffic.
       console.warn('[rate-limit] anonId not set; skipping quota check');
       await next();
       return;
@@ -78,11 +78,11 @@ export function requireMatchQuota() {
       const redis = getRedisClient();
       count = await redis.incr(key);
       if (count === 1) {
-        // First request in window — set TTL so the key self-expires after 24 h.
+        // First request in window - set TTL so the key self-expires after 24 h.
         await redis.expire(key, 86_400);
       }
     } catch (err) {
-      // Redis unavailable — fail-open.
+      // Redis unavailable - fail-open.
       console.warn(
         '[rate-limit] redis unavailable, passing request through:',
         (err as Error).message,
@@ -99,7 +99,7 @@ export function requireMatchQuota() {
         const ttl = await redis.ttl(key);
         if (ttl > 0) retryAfterSeconds = ttl;
       } catch {
-        // ignore — fallback value is already set
+        // ignore - fallback value is already set
       }
 
       c.header('Retry-After', String(retryAfterSeconds));

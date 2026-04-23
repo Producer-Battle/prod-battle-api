@@ -510,7 +510,7 @@ export const featureFlags = pgTable('feature_flags', {
  * better-auth tables
  * ──────────────────────────────────────────────────────────────────────────
  * better-auth owns session / credential / OAuth-linking storage. Schema
- * follows the library's v1 adapter contract — don't rename columns without
+ * follows the library's v1 adapter contract - don't rename columns without
  * also updating the auth config. `users` above stays the single source of
  * identity (handle, role); better-auth writes to it via the drizzle adapter.
  */

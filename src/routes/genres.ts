@@ -37,7 +37,7 @@ const GenreItem = z
     votingEndsAt: z.string().datetime().nullable(),
     voteCount: z.number().int(),
     iVoted: z.boolean(),
-    // Total sample packs attached to this genre (any kind — pool, generated,
+    // Total sample packs attached to this genre (any kind - pool, generated,
     // uploaded). Zero until at least one pack lands, so a fresh genre is
     // visibly empty in the UI.
     packCount: z.number().int(),
@@ -285,7 +285,7 @@ genresRoutes.openapi(voteRoute, async (c) => {
     return c.json({ error: 'voting_closed', message: 'Voting window has ended.' }, 400);
   }
 
-  // Upsert — idempotent: a repeat vote from the same user is a no-op.
+  // Upsert - idempotent: a repeat vote from the same user is a no-op.
   await d
     .insert(genreVotes)
     .values({ genreId: id, voterId: user.id })

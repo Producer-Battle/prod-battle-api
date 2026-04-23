@@ -9,7 +9,7 @@
 // stem type defined in GENRE_STEMS. Matches pick a pool pack at random;
 // every producer in a room gets the exact same kit (stems + zip URL).
 //
-// Runs against whatever S3_* env vars you source — MinIO is gone; staging
+// Runs against whatever S3_* env vars you source - MinIO is gone; staging
 // uses the Scaleway bucket created by prod-battle-infra's storage module.
 
 import { Writable } from 'node:stream';
@@ -168,7 +168,7 @@ async function main() {
   for (const g of genreRows) {
     const stems = GENRE_STEMS[g.slug];
     if (!stems) {
-      console.log(`[synth] skipping ${g.slug} — no stem set`);
+      console.log(`[synth] skipping ${g.slug} - no stem set`);
       continue;
     }
 

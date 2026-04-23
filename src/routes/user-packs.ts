@@ -10,7 +10,7 @@
 // off the Hono/Node event loop and avoids having to proxy multipart through
 // the container.
 //
-// Requires role in (producer, ar, admin) — i.e. any authenticated user.
+// Requires role in (producer, ar, admin) - i.e. any authenticated user.
 // Anonymous uploads are out of scope (no identity to attach the pack to).
 
 import { randomUUID } from 'node:crypto';
@@ -27,7 +27,7 @@ export const userPacksRoutes = new OpenAPIHono();
 const ErrorBody = z.object({ error: z.string(), message: z.string() });
 
 // Stem types we accept. Keep aligned with GENRE_STEMS in
-// matchmaking/defaults.ts — clients shouldn't be able to sneak new types in.
+// matchmaking/defaults.ts - clients shouldn't be able to sneak new types in.
 const STEM_TYPES = [
   'kick',
   'snare',
@@ -66,7 +66,7 @@ const requestUploadRoute = createRoute({
               .array(
                 z.object({
                   stemType: z.enum(STEM_TYPES),
-                  // Original filename from the client — used only to pick an
+                  // Original filename from the client - used only to pick an
                   // extension for the stored key, not to drive routing.
                   filename: z.string().min(1).max(128),
                   contentType: z.string().min(3).max(64),
@@ -85,7 +85,7 @@ const requestUploadRoute = createRoute({
       content: {
         'application/json': {
           schema: z.object({
-            // Pack id chosen by the server — the client passes this back on
+            // Pack id chosen by the server - the client passes this back on
             // POST /user-packs so we can link the uploaded URLs.
             packStagingId: z.string().uuid(),
             samples: z.array(
@@ -151,7 +151,7 @@ const finalizeRoute = createRoute({
   method: 'post',
   path: '/user-packs',
   tags: ['user-packs'],
-  summary: 'Finalize an uploaded pack — creates a sample_packs row',
+  summary: 'Finalize an uploaded pack - creates a sample_packs row',
   request: {
     body: {
       content: {
@@ -200,7 +200,7 @@ userPacksRoutes.openapi(finalizeRoute, async (c) => {
   const body = c.req.valid('json');
   const d = db();
 
-  // Genre must exist and be something the user can attach to — proposed user
+  // Genre must exist and be something the user can attach to - proposed user
   // genres they authored themselves OR any active genre.
   const [genre] = await d
     .select({ id: genres.id, status: genres.status, createdBy: genres.createdBy })

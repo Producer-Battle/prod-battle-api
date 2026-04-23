@@ -37,14 +37,14 @@ async function main() {
   // Warn if any MVP genre isn't in the DB yet (seed.ts should have run first).
   for (const g of MVP_SYSTEM_GENRES) {
     if (!genreBySlug[g.slug]) {
-      console.warn(`[seed-stems] genre "${g.slug}" not found in DB — run scripts/seed.ts first`);
+      console.warn(`[seed-stems] genre "${g.slug}" not found in DB - run scripts/seed.ts first`);
     }
   }
 
   for (const [genreSlug, stemTypes] of Object.entries(GENRE_STEMS)) {
     const genre = genreBySlug[genreSlug];
     if (!genre) {
-      console.warn(`[seed-stems] skipping "${genreSlug}" — not in DB`);
+      console.warn(`[seed-stems] skipping "${genreSlug}" - not in DB`);
       continue;
     }
 
@@ -57,7 +57,7 @@ async function main() {
     const poolCount = existingPacks.filter((r) => r.kind === 'pool').length;
 
     if (poolCount > 0) {
-      console.log(`[seed-stems] "${genreSlug}" already has ${poolCount} pool pack(s) — skipping`);
+      console.log(`[seed-stems] "${genreSlug}" already has ${poolCount} pool pack(s) - skipping`);
       continue;
     }
 

@@ -11,12 +11,12 @@ The deploy workflow (`.github/workflows/deploy.yml`) runs on two triggers and ma
 
 ### Jobs
 
-1. **meta** — Runs first; computes the environment name and image tags, then exposes them as outputs for downstream jobs.
-2. **build** — Logs into Scaleway Container Registry and pushes both the API image and the `ffmpeg` job image.
-3. **redeploy** — Calls the Scaleway API to tell the running Serverless Container to pull the new image. The prod redeploy is skipped silently if `SCW_CONTAINER_ID_PROD` has not been set yet.
-4. **publish-openapi** — Prod releases only. Generates the OpenAPI spec and publishes it as `@producer-battle/prod-battle-api` to GitHub Packages.
+1. **meta** - Runs first; computes the environment name and image tags, then exposes them as outputs for downstream jobs.
+2. **build** - Logs into Scaleway Container Registry and pushes both the API image and the `ffmpeg` job image.
+3. **redeploy** - Calls the Scaleway API to tell the running Serverless Container to pull the new image. The prod redeploy is skipped silently if `SCW_CONTAINER_ID_PROD` has not been set yet.
+4. **publish-openapi** - Prod releases only. Generates the OpenAPI spec and publishes it as `@producer-battle/prod-battle-api` to GitHub Packages.
 
-The `build` job has no pnpm/Node setup steps — it only builds the Docker image (Node runs inside the image). `publish-openapi` is the only job that installs Node dependencies on the runner.
+The `build` job has no pnpm/Node setup steps - it only builds the Docker image (Node runs inside the image). `publish-openapi` is the only job that installs Node dependencies on the runner.
 
 ---
 
@@ -30,9 +30,9 @@ All secrets are set at the **repository** level in GitHub (`Settings → Secrets
 |-------------|-------|-------|
 | `SCW_SECRET_KEY` | Your Scaleway API key secret | Used for both registry login and the Containers API. Obtain from Scaleway console → IAM → API Keys. |
 | `SCW_CONTAINER_ID_STAGING` | `59fbe610-4ecc-4052-9cd2-f0da59c25edc` | The UUID of the `prod-battle-staging-api` Serverless Container in `fr-par`. |
-| `SCW_CONTAINER_ID_PROD` | Set once prod is provisioned | Leave unset until prod infrastructure exists — the workflow skips the prod redeploy gracefully. |
+| `SCW_CONTAINER_ID_PROD` | Set once prod is provisioned | Leave unset until prod infrastructure exists - the workflow skips the prod redeploy gracefully. |
 
-`GITHUB_TOKEN` is provided automatically by Actions with `packages: write` — no additional secret is needed for publishing to GitHub Packages.
+`GITHUB_TOKEN` is provided automatically by Actions with `packages: write` - no additional secret is needed for publishing to GitHub Packages.
 
 `SCW_REGISTRY_USER` does **not** need to be stored as a secret. Scaleway's registry accepts any non-empty string as the username when authenticating with a secret key; the workflow hardcodes `nologin`.
 
@@ -61,13 +61,13 @@ Navigate to Containers → `prod-battle-staging-api-ns` → `prod-battle-staging
 Run these once from the repo root (requires `gh` CLI authenticated as a repo admin):
 
 ```bash
-# Scaleway API key — paste the secret key value when prompted
+# Scaleway API key - paste the secret key value when prompted
 gh secret set SCW_SECRET_KEY
 
 # Staging container ID (already known)
 gh secret set SCW_CONTAINER_ID_STAGING --body "59fbe610-4ecc-4052-9cd2-f0da59c25edc"
 
-# Prod container ID — set after prod infra is provisioned
+# Prod container ID - set after prod infra is provisioned
 # gh secret set SCW_CONTAINER_ID_PROD --body "<prod-container-uuid>"
 ```
 

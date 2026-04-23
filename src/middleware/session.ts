@@ -5,10 +5,10 @@
 // - `attachSession()` is safe to run globally: it reads the session if
 //   there is one and sets `c.var.user` / `c.var.session`, otherwise no-op.
 //   Never blocks an anonymous request.
-// - `requireAuth()` returns 401 when `c.var.user` is absent — use on routes
+// - `requireAuth()` returns 401 when `c.var.user` is absent - use on routes
 //   that need a logged-in user.
 // - `requireRole(...roles)` returns 403 when the user's role isn't in the
-//   allowed set — layered on top of requireAuth.
+//   allowed set - layered on top of requireAuth.
 
 import { createMiddleware } from 'hono/factory';
 import { auth } from '../auth/config.js';
@@ -36,7 +36,7 @@ declare module 'hono' {
 
 /**
  * Populate `c.var.user` + `c.var.session` if a valid session cookie exists.
- * Always calls `next()` — never blocks.
+ * Always calls `next()` - never blocks.
  */
 export function attachSession() {
   return createMiddleware(async (c, next) => {
@@ -63,7 +63,7 @@ export function attachSession() {
       }
     } catch (err) {
       // Session lookup errors (e.g. Redis blip if we ever move sessions
-      // there) must not take down the request — just proceed anonymous.
+      // there) must not take down the request - just proceed anonymous.
       console.warn('[session] attachSession failed:', (err as Error).message);
     }
     await next();
@@ -82,7 +82,7 @@ export function requireAuth() {
 
 /**
  * 403 when the authenticated user's role isn't in the allowed set.
- * Combine with requireAuth() — this middleware assumes c.var.user is set.
+ * Combine with requireAuth() - this middleware assumes c.var.user is set.
  */
 export function requireRole(...roles: AuthUser['role'][]) {
   return createMiddleware(async (c, next) => {
