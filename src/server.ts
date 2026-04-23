@@ -2,8 +2,10 @@ import { serve } from '@hono/node-server';
 import type { ServerType } from '@hono/node-server';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { cors } from 'hono/cors';
+import { auth } from './auth/config.js';
 import { env } from './env.js';
 import { anonId } from './middleware/anon-id.js';
+import { attachSession } from './middleware/session.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
 import { attachWebSocket } from './ws/index.js';
@@ -23,8 +25,20 @@ app.use(
   }),
 );
 
+// better-auth mounts its entire surface area (/sign-in, /sign-up, /session,
+// OAuth callbacks, …) at this one handler. Must be registered BEFORE
+// attachSession so the session cookie set by /sign-up is available on the
+// same response.
+app.on(['GET', 'POST'], '/auth/*', (c) => auth.handler(c.req.raw));
+
+// Populate c.var.user / c.var.session for every downstream handler.
+// Never blocks anonymous requests.
+app.use('*', attachSession());
+
 // Assign (or generate) a persistent anonymous identity cookie so rate-limiters
 // and other per-visitor features have a stable key without requiring auth.
+// Runs AFTER attachSession so authenticated users still get the cookie but
+// rate-limit middleware can bail early via c.var.user.
 app.use('*', anonId());
 
 registerRoutes(app);
