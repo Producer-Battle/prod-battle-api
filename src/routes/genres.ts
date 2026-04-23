@@ -1,7 +1,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { genreVotes, genres } from '../db/schema.js';
+import { genreVotes, genres, samplePacks } from '../db/schema.js';
 
 export const genresRoutes = new OpenAPIHono();
 
@@ -18,6 +18,10 @@ const GenreItem = z
     votingEndsAt: z.string().datetime().nullable(),
     voteCount: z.number().int(),
     iVoted: z.boolean(),
+    // Total sample packs attached to this genre (any kind — pool, generated,
+    // uploaded). Zero until at least one pack lands, so a fresh genre is
+    // visibly empty in the UI.
+    packCount: z.number().int(),
   })
   .openapi('Genre');
 
@@ -84,14 +88,22 @@ genresRoutes.openapi(listRoute, async (c) => {
 
   if (rows.length === 0) return c.json({ items: [] });
 
-  // Batch vote counts + my-vote flags for all genres in one round trip each.
+  // Batch vote counts + pack counts + my-vote flags for all genres in one
+  // round trip each.
   const ids = rows.map((r) => r.id);
-  const counts = await d
+  const voteCounts = await d
     .select({ genreId: genreVotes.genreId, n: count() })
     .from(genreVotes)
     .where(inArray(genreVotes.genreId, ids))
     .groupBy(genreVotes.genreId);
-  const countBy = new Map(counts.map((r) => [r.genreId, Number(r.n)]));
+  const voteCountBy = new Map(voteCounts.map((r) => [r.genreId, Number(r.n)]));
+
+  const packCounts = await d
+    .select({ genreId: samplePacks.genreId, n: count() })
+    .from(samplePacks)
+    .where(inArray(samplePacks.genreId, ids))
+    .groupBy(samplePacks.genreId);
+  const packCountBy = new Map(packCounts.map((r) => [r.genreId, Number(r.n)]));
 
   const myVoteIds = new Set<string>();
   if (user) {
@@ -106,7 +118,8 @@ genresRoutes.openapi(listRoute, async (c) => {
     items: rows.map((r) => ({
       ...r,
       votingEndsAt: r.votingEndsAt ? new Date(r.votingEndsAt).toISOString() : null,
-      voteCount: countBy.get(r.id) ?? 0,
+      voteCount: voteCountBy.get(r.id) ?? 0,
+      packCount: packCountBy.get(r.id) ?? 0,
       iVoted: myVoteIds.has(r.id),
     })),
   });
@@ -191,6 +204,7 @@ genresRoutes.openapi(createRouteDef, async (c) => {
       createdBy: row.createdBy,
       votingEndsAt: row.votingEndsAt ? new Date(row.votingEndsAt).toISOString() : null,
       voteCount: 0,
+      packCount: 0,
       iVoted: false,
     },
     201,
