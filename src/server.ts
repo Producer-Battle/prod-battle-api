@@ -13,15 +13,27 @@ import { attachWebSocket } from './ws/index.js';
 
 const app = new OpenAPIHono();
 
-const allowedOrigins = (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
+// Entries may be exact origins ("https://prodbattle.com") or wildcard
+// patterns ("https://*.news-worker.workers.dev"). Wildcards are needed
+// for Cloudflare's per-version preview URLs, whose hash changes per build.
+const allowedOriginPatterns = (env.AUTH_TRUSTED_ORIGINS ?? env.WEB_ORIGIN ?? '')
   .split(',')
   .map((s) => s.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .map((entry) => {
+    if (!entry.includes('*')) return { test: (o: string) => o === entry };
+    const regex = new RegExp(
+      `^${entry.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`,
+    );
+    return { test: (o: string) => regex.test(o) };
+  });
 app.use(
   '*',
   cors({
     origin: (origin) =>
-      allowedOrigins.length === 0 || allowedOrigins.includes(origin) ? origin : null,
+      allowedOriginPatterns.length === 0 || allowedOriginPatterns.some((p) => p.test(origin))
+        ? origin
+        : null,
     credentials: true,
   }),
 );
