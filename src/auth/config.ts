@@ -71,12 +71,15 @@ export const auth = betterAuth({
     : {},
 
   user: {
+    // Map better-auth's conceptual fields onto our existing column names.
+    // We keep `handle` / `avatarUrl` in the schema because the rest of the
+    // app references them; this mapping just tells better-auth to read/write
+    // against those columns when it asks for `name` / `image`.
+    fields: {
+      name: 'handle',
+      image: 'avatarUrl',
+    },
     additionalFields: {
-      handle: {
-        type: 'string',
-        required: false,
-        input: true,
-      },
       role: {
         type: 'string',
         required: false,
