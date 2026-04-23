@@ -30,15 +30,14 @@ const baseUrl = env.AUTH_BASE_URL ?? `http://localhost:${env.PORT}`;
 export const auth = betterAuth({
   database: drizzleAdapter(getDb(), {
     provider: 'pg',
+    // Keys must match what better-auth's internal router asks for. With
+    // usePlural=true it looks up "users" / "accounts" / etc.
     schema: {
-      user: schema.users,
-      account: schema.accounts,
-      session: schema.sessions,
-      verification: schema.verifications,
+      users: schema.users,
+      accounts: schema.accounts,
+      sessions: schema.sessions,
+      verifications: schema.verifications,
     },
-    // Map better-auth's default field names onto our existing column names.
-    // `users.handle` plays the role of better-auth's `name`; `avatarUrl` is
-    // `image`. `role` stays ours — better-auth just round-trips it.
     usePlural: true,
   }),
 
@@ -100,6 +99,13 @@ export const auth = betterAuth({
   advanced: {
     cookiePrefix: 'pb_',
     useSecureCookies: env.NODE_ENV === 'production',
+    // Our schema uses uuid columns everywhere. better-auth's default id
+    // generator returns 15-char nanoids which Postgres rejects with
+    // "invalid input syntax for type uuid". The "uuid" preset calls
+    // crypto.randomUUID() instead, producing a real v4 UUID.
+    database: {
+      generateId: 'uuid' as const,
+    },
   },
 });
 

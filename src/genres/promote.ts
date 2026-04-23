@@ -29,7 +29,9 @@ export async function runGenrePromotionJob(): Promise<{
   archived: number;
 }> {
   const d = db();
-  const now = new Date();
+  // Use an ISO string — postgres-js refuses to bind JS Date objects to
+  // tagged-template parameters, throwing "Received an instance of Date".
+  const nowIso = new Date().toISOString();
 
   // Single statement:
   //   proposed + window-ended + ≥ threshold votes  → active
@@ -52,7 +54,7 @@ export async function runGenrePromotionJob(): Promise<{
         ) vc ON vc.genre_id = g.id
        WHERE g.status = 'proposed'
          AND g.voting_ends_at IS NOT NULL
-         AND g.voting_ends_at <= ${now}
+         AND g.voting_ends_at <= ${nowIso}::timestamptz
     )
     UPDATE genres
        SET status = decided.new_status,
