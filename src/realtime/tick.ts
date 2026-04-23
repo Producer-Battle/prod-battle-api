@@ -2,6 +2,10 @@
 // with FOR UPDATE SKIP LOCKED, advances current_phase, publishes a
 // `phase_change` event to Redis. Guarded by leader election (see leader.ts)
 // so only one replica ticks at a time.
+//
+// Daily matches are NOT driven by battle_phases. Instead, a separate check
+// (dailyRolloverCheck) runs on the same tick cadence and transitions any
+// mode='daily' match whose daily_date < today from 'submit' to 'results'.
 
 import { and, lte, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
@@ -128,6 +132,45 @@ async function tick(): Promise<void> {
 }
 
 /**
+ * Transition yesterday's (and older) daily matches from 'submit' to 'results'.
+ * Runs on every tick but the SQL WHERE clause is a no-op on most ticks
+ * (only fires when daily_date < today, i.e. at rollover).
+ *
+ * Voting remains open on results-status daily matches indefinitely - the vote
+ * endpoint allows votes regardless of match status when mode='daily'.
+ */
+async function dailyRolloverCheck(): Promise<void> {
+  const d = db();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Find daily matches stuck in 'submit' from previous days.
+  const stale = await d.execute<{ id: string; room_code: string }>(
+    sql`SELECT id, room_code
+          FROM matches
+         WHERE mode = 'daily'
+           AND status = 'submit'
+           AND daily_date < ${today}::date
+         LIMIT 20`,
+  );
+
+  for (const row of stale as Array<{ id: string; room_code: string }>) {
+    await d
+      .update(matches)
+      .set({ status: 'results', endedAt: new Date() })
+      .where(sql`${matches.id} = ${row.id}`);
+
+    await publish(`battle:${row.id}`, {
+      type: 'phase_change',
+      matchId: row.id,
+      phase: 'results',
+      transitionsAt: null,
+    });
+
+    console.log(`[tick] daily match ${row.id} (${row.room_code}) rolled over to results`);
+  }
+}
+
+/**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
  */
@@ -138,6 +181,9 @@ export function startTickLoop(): () => void {
     // Called once we become leader. Start the 1s tick interval.
     tickTimer = setInterval(() => {
       tick().catch((err: Error) => console.error('[tick] error:', err.message));
+      dailyRolloverCheck().catch((err: Error) =>
+        console.error('[tick] daily rollover error:', err.message),
+      );
     }, 1000);
   });
 

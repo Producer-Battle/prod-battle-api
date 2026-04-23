@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   boolean,
   check,
+  date,
   integer,
   jsonb,
   numeric,
@@ -34,6 +35,7 @@ export const matchMode = pgEnum('match_mode', [
   'tournament',
   'practice',
   'flip',
+  'daily',
 ]);
 
 export const matchStatus = pgEnum('match_status', [
@@ -286,6 +288,11 @@ export const matches = pgTable(
     // we keep the match history but lose the reference - fine for audit.
     flipSourceId: uuid().references(() => flipSources.id, { onDelete: 'set null' }),
 
+    // Daily Challenge: the UTC date this match belongs to. Null for all
+    // other modes. The partial unique index below enforces at most one daily
+    // match per UTC date.
+    dailyDate: date({ mode: 'string' }),
+
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ withTimezone: true }),
@@ -293,6 +300,10 @@ export const matches = pgTable(
   },
   (t) => [
     uniqueIndex('matches_room_code_unique').on(t.roomCode),
+    // Partial unique index: only one daily match per UTC date.
+    uniqueIndex('matches_daily_date_unique')
+      .on(t.dailyDate)
+      .where(sql`${t.dailyDate} IS NOT NULL`),
     check('matches_team_size_range', sql`${t.teamSize} between 1 and 5`),
     check('matches_team_count_range', sql`${t.teamCount} between 1 and 8`),
     check('matches_total_players_max_10', sql`${t.teamSize} * ${t.teamCount} <= 10`),

@@ -118,7 +118,10 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   const d = db();
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return c.json({ error: 'match not found' }, 404);
-  if (m.status !== 'vote' && m.status !== 'reveal') {
+
+  // Daily matches allow voting at any time (both 'submit' and 'results' status).
+  // All other modes require vote/reveal phase.
+  if (m.mode !== 'daily' && m.status !== 'vote' && m.status !== 'reveal') {
     return c.json({ error: `match not in vote phase (status=${m.status})` }, 400);
   }
 
@@ -171,8 +174,11 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     accepted++;
   }
 
-  // Try to short-circuit to results if every eligible voter is done.
-  await maybeAdvanceAfterVote(m.id);
+  // For non-daily matches: short-circuit to results if every eligible voter is done.
+  // Daily matches stay in their current status - voting is always open.
+  if (m.mode !== 'daily') {
+    await maybeAdvanceAfterVote(m.id);
+  }
 
   return c.json({ accepted });
 });

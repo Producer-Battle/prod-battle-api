@@ -11,7 +11,14 @@ export const PRIVATE_SUBMIT_SECONDS_PRESETS = [
   3600, // 60 min - the deep-work option
 ] as const;
 
-export type MatchMode = 'quickplay' | 'ranked' | 'private' | 'tournament' | 'practice' | 'flip';
+export type MatchMode =
+  | 'quickplay'
+  | 'ranked'
+  | 'private'
+  | 'tournament'
+  | 'practice'
+  | 'flip'
+  | 'daily';
 
 // Submission-phase duration (seconds) used when a match row has
 // `submit_seconds = NULL`. Picked to fit each mode's vibe:
@@ -26,6 +33,9 @@ export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
   tournament: 1800, // 30 min
   practice: 900, // 15 min
   flip: 600, // 10 min - enough to arrange a loop, not so long it drags
+  // Daily matches have no timed phase. NULL is stored in DB; this fallback
+  // is used by GET /matches/:code submitSeconds response only.
+  daily: 86400,
 };
 
 // Team sizes each mode allows. Private = everything. Others are fixed.
@@ -62,6 +72,9 @@ export const ALLOWED_TEAM_LAYOUTS: Record<
     { teamSize: 1, teamCount: 4, label: 'FFA-4' },
     { teamSize: 1, teamCount: 8, label: 'FFA-8' },
   ],
+  // Daily matches use teamSize=1/teamCount=1 to satisfy DB constraints.
+  // The 20-submitter cap is pure application logic, not a team-layout concern.
+  daily: [{ teamSize: 1, teamCount: 1, label: 'Daily' }],
 };
 
 // Sample mode options per match mode.
@@ -75,6 +88,9 @@ export const DEFAULT_SAMPLE_MODE: Record<MatchMode, 'none' | 'generated' | 'uplo
   // Flip matches also get a generated drum pack alongside the main flip
   // source so producers have drums/bass to build around the loop.
   flip: 'generated',
+  // Daily challenge uses a pool pack chosen deterministically from the date hash.
+  // The pack is resolved at match creation, not generated on the fly.
+  daily: 'generated',
 };
 
 // Stem set expected for each genre's generated pack. Used by the pool

@@ -71,6 +71,13 @@
       "when": 1776960064803,
       "tag": "0009_nervous_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1776960848214,
+      "tag": "0010_mysterious_firedrake",
+      "breakpoints": true
     }
   ]
 }

@@ -17,6 +17,8 @@ import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users } from '../db/schema.js';
 import { maybeAdvanceAfterSubmission } from '../room/transitions.js';
 
+const DAILY_CAP = 20;
+
 export const submissionsRoutes = new OpenAPIHono();
 
 const UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -35,18 +37,25 @@ function extFromContentType(ct: string): string {
   return 'wav';
 }
 
+// For daily matches the caller does not need to be a pre-seated player.
+// We just need to find/create the user row and resolve the match.
 async function matchAndUser(code: string, handle: string) {
   const d = db();
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return { error: 'match not found' as const };
+
   const [u] = await d.select().from(users).where(eq(users.handle, handle)).limit(1);
   if (!u) return { error: 'user not found' as const };
-  const [player] = await d
-    .select()
-    .from(matchPlayers)
-    .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)))
-    .limit(1);
-  if (!player) return { error: 'not a player in this match' as const };
+
+  if (m.mode !== 'daily') {
+    const [player] = await d
+      .select()
+      .from(matchPlayers)
+      .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)))
+      .limit(1);
+    if (!player) return { error: 'not a player in this match' as const };
+  }
+
   return { match: m, user: u };
 }
 
@@ -163,6 +172,17 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
     return c.json({ error: 'already submitted' }, 409);
   }
 
+  // For daily matches enforce the global 20-unique-submitter cap.
+  if (result.match.mode === 'daily') {
+    const capRows = await d.execute<{ n: number }>(
+      sql`SELECT COUNT(DISTINCT user_id)::int AS n FROM submissions WHERE match_id = ${result.match.id}`,
+    );
+    const count = (capRows[0] as { n: number } | undefined)?.n ?? 0;
+    if (count >= DAILY_CAP) {
+      return c.json({ error: "Today's board is full - come back tomorrow." }, 409);
+    }
+  }
+
   const audioUrl = publicUrl(body.key);
   // Auto-generate a title when the producer leaves it blank so the feed
   // never shows "Untitled". Producers can rename later from their profile.
@@ -183,11 +203,13 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
 
   if (!row) return c.json({ error: 'failed to save submission' }, 500);
 
-  // If every seated player has submitted, short-circuit the submit timer
-  // and advance straight into reveal.
-  await maybeAdvanceAfterSubmission(result.match.id).catch((err) =>
-    console.warn('[submissions] advance check failed:', (err as Error).message),
-  );
+  // For non-daily matches: if every seated player has submitted, advance to reveal.
+  // Daily matches do not use the timed phase system.
+  if (result.match.mode !== 'daily') {
+    await maybeAdvanceAfterSubmission(result.match.id).catch((err) =>
+      console.warn('[submissions] advance check failed:', (err as Error).message),
+    );
+  }
 
   return c.json({ id: row.id, audioUrl: await signUrl(audioUrl) });
 });

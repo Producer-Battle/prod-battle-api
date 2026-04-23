@@ -22,7 +22,9 @@ export const matchesRoutes = new OpenAPIHono();
 // Apply the anonymous match-creation quota only to POST /matches.
 matchesRoutes.use('/matches', requireMatchQuota());
 
+// POST /matches rejects 'daily' - daily matches are server-created only via GET /daily-challenge.
 const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice', 'flip'] as const;
+const ALL_MODES = [...MODES, 'daily'] as const;
 const PRIVATE_PRESETS = PRIVATE_SUBMIT_SECONDS_PRESETS as unknown as [number, ...number[]];
 
 const SamplePackItemSchema = z.object({
@@ -98,7 +100,7 @@ const FlipSourceSchema = z
 const MatchResponse = z
   .object({
     id: z.string().uuid(),
-    mode: z.enum(MODES),
+    mode: z.enum(ALL_MODES),
     roomCode: z.string(),
     teamSize: z.number().int(),
     teamCount: z.number().int(),
@@ -146,6 +148,11 @@ const createRouteDef = createRoute({
 matchesRoutes.openapi(createRouteDef, async (c) => {
   const body = c.req.valid('json');
   const d = db();
+
+  // Daily matches are server-created only. Clients must use GET /daily-challenge.
+  if ((body.mode as string) === 'daily') {
+    return c.json({ error: 'daily matches cannot be created via POST /matches' }, 400);
+  }
 
   // ─── Matchmaking (Quick Play / Ranked) ──────────────────────────────────
   // If genre was not pinned by the caller (default for Quick Play), look
