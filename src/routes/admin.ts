@@ -572,8 +572,477 @@ adminRoutes.openapi(createSamplePackRoute, async (c) => {
   return c.json(row, 201);
 });
 
+// ─── GET /admin/genres ───────────────────────────────────────────────────────
+
+const listGenresRoute = createRoute({
+  method: 'get',
+  path: '/admin/genres',
+  tags: ['admin'],
+  summary: 'List all genres (all kinds, all statuses)',
+  request: {
+    query: z.object({
+      kind: z.enum(['system', 'user']).optional(),
+      status: z.enum(['active', 'archived', 'proposed']).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Genres',
+      content: {
+        'application/json': {
+          schema: z.object({
+            items: z.array(
+              z.object({
+                id: z.string().uuid(),
+                slug: z.string(),
+                name: z.string(),
+                kind: z.enum(['system', 'user']),
+                status: z.enum(['active', 'archived', 'proposed']),
+                stemTypes: z.array(z.string()).nullable(),
+                voteCount: z.number().int(),
+                createdAt: z.string().datetime(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(listGenresRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { kind, status } = c.req.valid('query');
+  const d = db();
+
+  const rows = await d.execute<{
+    id: string;
+    slug: string;
+    name: string;
+    kind: 'system' | 'user';
+    status: 'active' | 'archived' | 'proposed';
+    stem_types: string[] | null;
+    vote_count: string;
+    created_at: string;
+  }>(sql`
+    SELECT
+      g.id, g.slug, g.name, g.kind, g.status, g.stem_types,
+      COUNT(gv.genre_id)::text AS vote_count,
+      g.created_at
+    FROM genres g
+    LEFT JOIN genre_votes gv ON gv.genre_id = g.id
+    WHERE (${kind ?? null}::genre_kind IS NULL OR g.kind = ${kind ?? null}::genre_kind)
+      AND (${status ?? null}::genre_status IS NULL OR g.status = ${status ?? null}::genre_status)
+    GROUP BY g.id
+    ORDER BY g.created_at DESC
+  `);
+
+  return c.json(
+    {
+      items: rows.map((r) => ({
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        kind: r.kind,
+        status: r.status,
+        stemTypes: r.stem_types ?? null,
+        voteCount: Number(r.vote_count),
+        createdAt: new Date(r.created_at).toISOString(),
+      })),
+    },
+    200,
+  );
+});
+
+// ─── PATCH /admin/genres/:id ─────────────────────────────────────────────────
+
+const updateGenreRoute = createRoute({
+  method: 'patch',
+  path: '/admin/genres/{id}',
+  tags: ['admin'],
+  summary: 'Update genre name, stemTypes, or status (active<->archived only)',
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            name: z.string().min(2).max(64).optional(),
+            stemTypes: z.array(z.string()).min(1).max(20).optional(),
+            status: z.enum(['active', 'archived']).optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated',
+      content: {
+        'application/json': {
+          schema: z.object({
+            id: z.string().uuid(),
+            slug: z.string(),
+            name: z.string(),
+            status: z.enum(['active', 'archived', 'proposed']),
+            stemTypes: z.array(z.string()).nullable(),
+          }),
+        },
+      },
+    },
+    400: { description: 'Bad request', content: { 'application/json': { schema: AdminError } } },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(updateGenreRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const d = db();
+
+  // Guard: status transitions from proposed must go through /promote.
+  if (body.status === 'active') {
+    const [existing] = await d
+      .select({ status: genres.status })
+      .from(genres)
+      .where(eq(genres.id, id))
+      .limit(1);
+    if (existing?.status === 'proposed') {
+      return c.json(
+        {
+          error: 'use_promote',
+          message: 'Promote proposed genres via POST /admin/genres/:id/promote instead.',
+        },
+        400,
+      );
+    }
+  }
+
+  const updateValues: Record<string, unknown> = {};
+  if (body.name !== undefined) updateValues.name = body.name;
+  if (body.stemTypes !== undefined) updateValues.stemTypes = body.stemTypes;
+  if (body.status !== undefined) updateValues.status = body.status;
+
+  if (Object.keys(updateValues).length === 0) {
+    return c.json({ error: 'no_fields', message: 'No fields to update.' }, 400);
+  }
+
+  const [updated] = await d.update(genres).set(updateValues).where(eq(genres.id, id)).returning({
+    id: genres.id,
+    slug: genres.slug,
+    name: genres.name,
+    status: genres.status,
+    stemTypes: genres.stemTypes,
+  });
+
+  if (!updated) return c.json({ error: 'not_found', message: 'No such genre.' }, 404);
+  return c.json(
+    {
+      id: updated.id,
+      slug: updated.slug,
+      name: updated.name,
+      status: updated.status,
+      stemTypes: updated.stemTypes ?? null,
+    },
+    200,
+  );
+});
+
+// ─── DELETE /admin/genres/:id ────────────────────────────────────────────────
+
+const deleteGenreRoute = createRoute({
+  method: 'delete',
+  path: '/admin/genres/{id}',
+  tags: ['admin'],
+  summary: 'Hard-delete a genre. Returns 409 if any match references it.',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    204: { description: 'Deleted' },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+    409: {
+      description: 'Referenced by matches',
+      content: { 'application/json': { schema: AdminError } },
+    },
+  },
+});
+
+adminRoutes.openapi(deleteGenreRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  // Check FK: matches.primary_genre_id is ON DELETE RESTRICT.
+  const [matchRef] = await d.execute<{ n: string }>(sql`
+    SELECT COUNT(*)::text AS n FROM matches WHERE primary_genre_id = ${id}
+  `);
+  if (Number(matchRef?.n ?? 0) > 0) {
+    return c.json(
+      {
+        error: 'genre_in_use',
+        message: `Cannot delete: ${matchRef?.n} match(es) reference this genre.`,
+      },
+      409,
+    );
+  }
+
+  const [row] = await d.delete(genres).where(eq(genres.id, id)).returning({ id: genres.id });
+  if (!row) return c.json({ error: 'not_found', message: 'No such genre.' }, 404);
+  return c.body(null, 204);
+});
+
+// ─── DELETE /admin/users/:id ─────────────────────────────────────────────────
+
+const deleteUserRoute = createRoute({
+  method: 'delete',
+  path: '/admin/users/{id}',
+  tags: ['admin'],
+  summary: 'Soft-delete a user (anonymise email, handle, avatar). Refuses self-delete.',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    204: { description: 'Soft-deleted' },
+    400: {
+      description: 'Self-delete refused',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(deleteUserRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+
+  if (id === g.userId) {
+    return c.json({ error: 'self_delete', message: 'Cannot delete your own account.' }, 400);
+  }
+
+  const d = db();
+  // Generate a short unique suffix so handle remains unique after multiple deletes.
+  const shortId = id.slice(0, 8);
+
+  const [row] = await d
+    .update(users)
+    .set({
+      email: `${id}@deleted.local`,
+      handle: `_deleted_${shortId}`,
+      avatarUrl: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, id))
+    .returning({ id: users.id });
+
+  if (!row) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+  return c.body(null, 204);
+});
+
+// ─── GET /admin/matches ───────────────────────────────────────────────────────
+
+const listMatchesRoute = createRoute({
+  method: 'get',
+  path: '/admin/matches',
+  tags: ['admin'],
+  summary: 'Paginated list of all matches (not just live)',
+  request: {
+    query: z.object({
+      status: z.enum(['lobby', 'submit', 'reveal', 'vote', 'results', 'cancelled']).optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+      offset: z.coerce.number().int().min(0).default(0),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Matches',
+      content: {
+        'application/json': {
+          schema: z.object({
+            items: z.array(
+              z.object({
+                id: z.string().uuid(),
+                roomCode: z.string().nullable(),
+                mode: z.string(),
+                genreSlug: z.string(),
+                status: z.string(),
+                seated: z.number().int(),
+                capacity: z.number().int(),
+                submissionCount: z.number().int(),
+                createdAt: z.string().datetime(),
+              }),
+            ),
+            total: z.number().int(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(listMatchesRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { status, limit, offset } = c.req.valid('query');
+  const d = db();
+
+  const rows = await d.execute<{
+    id: string;
+    room_code: string | null;
+    mode: string;
+    genre_slug: string;
+    status: string;
+    seated: string;
+    capacity: string;
+    submission_count: string;
+    created_at: string;
+  }>(sql`
+    SELECT
+      m.id,
+      m.room_code,
+      m.mode,
+      g.slug AS genre_slug,
+      m.status,
+      (SELECT COUNT(*)::int FROM match_players mp WHERE mp.match_id = m.id AND mp.is_spectator = false) AS seated,
+      (m.team_size * m.team_count) AS capacity,
+      (SELECT COUNT(*)::int FROM submissions s WHERE s.match_id = m.id) AS submission_count,
+      m.created_at
+    FROM matches m
+    JOIN genres g ON g.id = m.primary_genre_id
+    WHERE (${status ?? null}::match_status IS NULL OR m.status = ${status ?? null}::match_status)
+    ORDER BY m.created_at DESC
+    LIMIT ${limit}
+    OFFSET ${offset}
+  `);
+
+  const [totalRow] = await d.execute<{ n: string }>(sql`
+    SELECT COUNT(*)::text AS n FROM matches m
+    WHERE (${status ?? null}::match_status IS NULL OR m.status = ${status ?? null}::match_status)
+  `);
+
+  return c.json(
+    {
+      items: rows.map((r) => ({
+        id: r.id,
+        roomCode: r.room_code ?? null,
+        mode: r.mode,
+        genreSlug: r.genre_slug,
+        status: r.status,
+        seated: Number(r.seated),
+        capacity: Number(r.capacity),
+        submissionCount: Number(r.submission_count),
+        createdAt: new Date(r.created_at).toISOString(),
+      })),
+      total: Number(totalRow?.n ?? 0),
+    },
+    200,
+  );
+});
+
+// ─── POST /admin/matches/:id/cancel ──────────────────────────────────────────
+
+const cancelMatchRoute = createRoute({
+  method: 'post',
+  path: '/admin/matches/{id}/cancel',
+  tags: ['admin'],
+  summary: 'Set match status to cancelled',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Cancelled',
+      content: {
+        'application/json': {
+          schema: z.object({ id: z.string().uuid(), status: z.literal('cancelled') }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(cancelMatchRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [updated] = await d
+    .update(matches)
+    .set({ status: 'cancelled', endedAt: new Date() })
+    .where(eq(matches.id, id))
+    .returning({ id: matches.id });
+
+  if (!updated) return c.json({ error: 'not_found', message: 'No such match.' }, 404);
+  return c.json({ id: updated.id, status: 'cancelled' as const }, 200);
+});
+
+// ─── DELETE /admin/matches/:id ────────────────────────────────────────────────
+
+const deleteMatchRoute = createRoute({
+  method: 'delete',
+  path: '/admin/matches/{id}',
+  tags: ['admin'],
+  summary: 'Hard-delete a match row. FK cascades handle submissions/players.',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    204: { description: 'Deleted' },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(deleteMatchRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const [row] = await db().delete(matches).where(eq(matches.id, id)).returning({ id: matches.id });
+  if (!row) return c.json({ error: 'not_found', message: 'No such match.' }, 404);
+  return c.body(null, 204);
+});
+
 // Keep the enum import anchored for drizzle inference.
 void userRoleEnum;
 void inArray;
-void matches;
 void desc;
