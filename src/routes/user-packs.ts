@@ -159,6 +159,9 @@ const finalizeRoute = createRoute({
           schema: z.object({
             genreId: z.string().uuid(),
             name: z.string().min(2).max(64),
+            // Uploader must confirm copyright clearance on every upload.
+            // Stored as a timestamp on the inserted row for audit purposes.
+            copyrightAttested: z.literal(true),
             samples: z
               .array(
                 z.object({
@@ -223,6 +226,7 @@ userPacksRoutes.openapi(finalizeRoute, async (c) => {
       name: body.name,
       createdBy: user.id,
       samples: body.samples as SamplePackItem[],
+      copyrightAttestedAt: new Date(),
     })
     .returning({ id: samplePacks.id, genreId: samplePacks.genreId, name: samplePacks.name });
 

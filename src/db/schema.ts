@@ -208,6 +208,10 @@ export const samplePacks = pgTable('sample_packs', {
   // Pre-built ZIP of every stem in this pack. Populated at seed time for
   // kind='pool' packs; null for legacy rows or kind='uploaded' awaiting a zip.
   zipUrl: text(),
+  // Timestamp at which the uploader confirmed copyright clearance. Null for
+  // generated/pool packs and legacy uploaded rows. Used as an audit trail
+  // if a DMCA request is filed against a user-uploaded pack.
+  copyrightAttestedAt: timestamp({ withTimezone: true }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

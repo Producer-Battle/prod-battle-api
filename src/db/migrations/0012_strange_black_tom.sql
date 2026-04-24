@@ -1,0 +1,1 @@
+ALTER TABLE "sample_packs" ADD COLUMN "copyright_attested_at" timestamp with time zone;
