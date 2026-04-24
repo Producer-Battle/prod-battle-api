@@ -176,12 +176,16 @@ adminFlipSourcesRoutes.openapi(generateRoute, async (c) => {
     genreId = g.id;
   }
 
+  // Always start at page 1. searchStems shuffles results internally so
+  // variety comes from the shuffle, not from skipping to a random page.
+  // Picking page 2/3 for queries with few CC0 results causes a 404 from
+  // Freesound (count < page_size means there is only ever page 1).
   const hits = await searchStems({
     query: body.query,
     count: body.count,
     minDurationSec: body.minDurationSec,
     maxDurationSec: body.maxDurationSec,
-    page: 1 + Math.floor(Math.random() * 3),
+    page: 1,
   });
 
   let skipped = 0;

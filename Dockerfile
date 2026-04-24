@@ -20,6 +20,8 @@ ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION
 ENV NODE_ENV=production
 ENV PORT=8080
+# ffmpeg is required by oggToWav (admin/flip-sources/generate, admin/sample-packs/generate)
+RUN apk add --no-cache ffmpeg
 RUN addgroup -S app && adduser -S -G app app
 COPY package.json pnpm-lock.yaml* ./
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
