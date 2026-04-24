@@ -69,10 +69,26 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
           kind: 'pool',
           name: 'test-pool-a',
           samples: [
-            { stemType: 'kick', name: 'kick-01', url: 'https://example.com/kick.wav' },
-            { stemType: 'snare', name: 'snare-01', url: 'https://example.com/snare.wav' },
-            { stemType: 'hihat', name: 'hihat-01', url: 'https://example.com/hihat.wav' },
-            { stemType: '808', name: '808-01', url: 'https://example.com/808.wav' },
+            {
+              stemType: 'kick',
+              name: 'kick-01',
+              url: 'http://localhost:9000/pb-test/stems/kick-01.wav',
+            },
+            {
+              stemType: 'snare',
+              name: 'snare-01',
+              url: 'http://localhost:9000/pb-test/stems/snare-01.wav',
+            },
+            {
+              stemType: 'hihat',
+              name: 'hihat-01',
+              url: 'http://localhost:9000/pb-test/stems/hihat-01.wav',
+            },
+            {
+              stemType: '808',
+              name: '808-01',
+              url: 'http://localhost:9000/pb-test/stems/808-01.wav',
+            },
           ],
         })
         .returning(),

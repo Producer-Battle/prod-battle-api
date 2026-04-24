@@ -12,12 +12,44 @@
 //   createMatch -> join -> start -> submit -> vote -> results
 
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { createMiddleware } from 'hono/factory';
 import { anonId } from '../middleware/anon-id.js';
+import type { AuthUser } from '../middleware/session.js';
 import { registerRoutes } from '../routes/index.js';
 
-export function buildTestApp(): OpenAPIHono {
+export type BuildTestAppOptions = {
+  /**
+   * When set, installs a middleware that stubs c.var.user as an admin with
+   * this id. Omit (or leave undefined) to keep every request anonymous,
+   * which is the default behaviour used by all existing e2e test files.
+   */
+  asAdminUserId?: string;
+  /**
+   * Override the role injected when asAdminUserId is set. Defaults to
+   * 'admin'. Pass 'producer' (or any other role) to test 403 paths.
+   */
+  role?: AuthUser['role'];
+};
+
+export function buildTestApp(opts: BuildTestAppOptions = {}): OpenAPIHono {
   const app = new OpenAPIHono();
   app.use('*', anonId());
+  if (opts.asAdminUserId) {
+    const userId = opts.asAdminUserId;
+    const role: AuthUser['role'] = opts.role ?? 'admin';
+    app.use(
+      '*',
+      createMiddleware(async (c, next) => {
+        c.set('user', {
+          id: userId,
+          email: 'admin@test.local',
+          handle: 'admin',
+          role,
+        });
+        await next();
+      }),
+    );
+  }
   registerRoutes(app);
   return app;
 }

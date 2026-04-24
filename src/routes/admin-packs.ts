@@ -10,7 +10,7 @@ import { DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { generatePackItems } from '../audio/pool-pack-generator.js';
-import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
+import { bucket, keyFromUrl, s3, signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { type SamplePackItem, genres, samplePacks } from '../db/schema.js';
 import { GENRE_STEMS } from '../matchmaking/defaults.js';
@@ -408,6 +408,65 @@ adminPacksRoutes.openapi(deletePackRoute, async (c) => {
     .returning({ id: samplePacks.id });
   if (!row) return c.json({ error: 'not_found', message: 'Pack not found.' }, 404);
   return c.body(null, 204);
+});
+
+// ─── GET /admin/sample-packs/:id/stems ──────────────────────────────────────
+
+const StemRow = z.object({
+  stemType: z.string(),
+  name: z.string(),
+  url: z.string(),
+  durationSec: z.number().int().nullable(),
+});
+
+const listStemsRoute = createRoute({
+  method: 'get',
+  path: '/admin/sample-packs/{id}/stems',
+  tags: ['admin', 'sample-packs'],
+  summary: 'List stems for a pack with short-lived signed GET URLs',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Stems',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(StemRow) }) },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminPacksRoutes.openapi(listStemsRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const [pack] = await db()
+    .select({ id: samplePacks.id, samples: samplePacks.samples })
+    .from(samplePacks)
+    .where(eq(samplePacks.id, id))
+    .limit(1);
+
+  if (!pack) return c.json({ error: 'not_found', message: 'Pack not found.' }, 404);
+
+  const samples = pack.samples as SamplePackItem[];
+  if (samples.length === 0) return c.json({ items: [] }, 200);
+
+  const items = await Promise.all(
+    samples.map(async (s) => ({
+      stemType: s.stemType,
+      name: s.name,
+      url: await signUrl(s.url, 3600),
+      durationSec: null as number | null,
+    })),
+  );
+
+  return c.json({ items }, 200);
 });
 
 // Keep imports anchored.
