@@ -16,7 +16,7 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { desc, eq } from 'drizzle-orm';
 import { oggToWav } from '../audio/convert.js';
 import { downloadPreview, searchStems } from '../audio/freesound.js';
-import { publicUrl, putObject } from '../audio/s3.js';
+import { publicUrl, putObject, signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { flipSources, genres } from '../db/schema.js';
 
@@ -95,13 +95,16 @@ adminFlipSourcesRoutes.openapi(listRoute, async (c) => {
 
   return c.json(
     {
-      items: rows.map((r) => ({
-        ...r,
-        genreSlug: r.genreSlug ?? null,
-        sourceId: r.sourceId ?? null,
-        durationSec: r.durationSec ?? null,
-        createdAt: r.createdAt.toISOString(),
-      })),
+      items: await Promise.all(
+        rows.map(async (r) => ({
+          ...r,
+          url: await signUrl(r.url, 3600),
+          genreSlug: r.genreSlug ?? null,
+          sourceId: r.sourceId ?? null,
+          durationSec: r.durationSec ?? null,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      ),
     },
     200,
   );
@@ -231,7 +234,7 @@ adminFlipSourcesRoutes.openapi(generateRoute, async (c) => {
         id: row.id,
         label: row.label,
         genreSlug: body.genreSlug ?? null,
-        url: row.url,
+        url: await signUrl(row.url, 3600),
         source: row.source,
         sourceId: row.sourceId,
         durationSec: row.durationSec,
@@ -309,7 +312,7 @@ adminFlipSourcesRoutes.openapi(toggleRoute, async (c) => {
       id: withGenre.id,
       label: withGenre.label,
       genreSlug: withGenre.genreSlug ?? null,
-      url: withGenre.url,
+      url: await signUrl(withGenre.url, 3600),
       source: withGenre.source,
       sourceId: withGenre.sourceId ?? null,
       durationSec: withGenre.durationSec ?? null,
