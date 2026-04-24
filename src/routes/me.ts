@@ -1,15 +1,50 @@
 // Self-serve profile endpoints for authenticated users.
 //
-// GET  /me            - full profile shape for the current user
-// PATCH /me           - update handle and/or avatarUrl
-// GET  /users/:handle - public profile for any active user (no email, no status)
+// GET  /me                      - full profile shape for the current user
+// PATCH /me                     - update handle and/or avatarUrl
+// POST /me/claim-guest-handle   - merge a guest identity into the caller's account
+// GET  /users/:handle           - public profile for any active user (no email, no status)
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
+import Redis from 'ioredis';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { producerProfiles, submissions, users } from '../db/schema.js';
+import {
+  accounts,
+  matchPlayers,
+  producerProfiles,
+  sessions,
+  submissions,
+  users,
+  votes,
+} from '../db/schema.js';
+import { env } from '../env.js';
 import { requireAuth } from '../middleware/session.js';
+
+// ─── Lazy Redis client (reuse the same env var as rate-limit.ts) ─────────────
+
+let _claimRedis: Redis | null = null;
+
+function getClaimRedis(): Redis {
+  if (!_claimRedis) {
+    const url = env.REDIS_URL ?? 'redis://localhost:6379';
+    _claimRedis = new Redis(url, {
+      lazyConnect: true,
+      retryStrategy: (times) => Math.min(times * 100, 3000),
+      maxRetriesPerRequest: 1,
+    });
+    _claimRedis.on('error', (err: Error) => {
+      console.warn('[claim-guest] redis error:', err.message);
+    });
+  }
+  return _claimRedis;
+}
+
+// Exported for tests that need to reset module-level state between cases.
+export function _resetClaimRedisForTest(): void {
+  _claimRedis = null;
+}
 
 export const meRoutes = new OpenAPIHono();
 
@@ -210,6 +245,233 @@ meRoutes.openapi(patchMeRoute, async (c) => {
         totalSubmissions: Number(stats?.total_submissions ?? 0),
         bestRank: stats?.best_rank != null ? Number(stats.best_rank) : null,
       },
+    },
+    200,
+  );
+});
+
+// ─── POST /me/claim-guest-handle ────────────────────────────────────────────
+
+const ClaimGuestHandleBody = z
+  .object({
+    guestHandle: z.string().min(1).max(64),
+  })
+  .openapi('ClaimGuestHandleBody');
+
+const ClaimGuestHandleResponse = z
+  .object({
+    newHandle: z.string(),
+    stats: z.object({
+      matchesMerged: z.number().int(),
+      submissionsMerged: z.number().int(),
+      votesMerged: z.number().int(),
+    }),
+  })
+  .openapi('ClaimGuestHandleResponse');
+
+const claimGuestHandleRoute = createRoute({
+  method: 'post',
+  path: '/me/claim-guest-handle',
+  tags: ['profile'],
+  summary: 'Merge a guest handle and its history into the authenticated account',
+  middleware: [requireAuth()] as const,
+  request: {
+    body: { content: { 'application/json': { schema: ClaimGuestHandleBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Claim succeeded - handle updated, history merged',
+      content: { 'application/json': { schema: ClaimGuestHandleResponse } },
+    },
+    400: { description: 'Handle collision or validation error' },
+    401: { description: 'Unauthenticated' },
+    404: { description: 'Guest not found' },
+    409: { description: 'Already claimed or target is a real account' },
+    429: { description: 'Rate limited - only 1 claim per 24h' },
+  },
+});
+
+meRoutes.openapi(claimGuestHandleRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+
+  const { guestHandle } = c.req.valid('json');
+  const normalised = guestHandle.toLowerCase();
+  const callerId = user.id;
+
+  // ── Rate limit: 1 claim per user per 24h ─────────────────────────────────
+  const rlKey = `rl:claim-guest:${callerId}`;
+  try {
+    const redis = getClaimRedis();
+    const count = await redis.incr(rlKey);
+    if (count === 1) {
+      await redis.expire(rlKey, 86_400);
+    }
+    if (count > 1) {
+      return c.json(
+        {
+          error: 'already_claimed_recently',
+          message: 'You may only claim one guest handle per 24 hours.',
+        },
+        429,
+      );
+    }
+  } catch (err) {
+    // Redis unavailable - fail-open so the operation is still allowed.
+    console.warn('[claim-guest] redis unavailable, skipping rate limit:', (err as Error).message);
+  }
+
+  const d = db();
+
+  // ── Look up the target guest row ─────────────────────────────────────────
+  const [target] = await d
+    .select({
+      id: users.id,
+      email: users.email,
+      status: users.status,
+    })
+    .from(users)
+    .where(eq(users.handle, normalised))
+    .limit(1);
+
+  if (!target) {
+    return c.json(
+      { error: 'guest_not_found', message: `No user found with handle "${normalised}".` },
+      404,
+    );
+  }
+
+  // Caller must not be claiming themselves.
+  if (target.id === callerId) {
+    return c.json({ error: 'guest_not_found', message: 'Cannot claim your own handle.' }, 404);
+  }
+
+  // Target must be a guest (email ends in @guest.local).
+  if (!target.email.endsWith('@guest.local')) {
+    return c.json(
+      {
+        error: 'guest_is_real_account',
+        message: 'That handle belongs to a real account and cannot be claimed.',
+      },
+      409,
+    );
+  }
+
+  // Target must be active.
+  if (target.status !== 'active') {
+    return c.json(
+      { error: 'guest_not_found', message: `No active user found with handle "${normalised}".` },
+      404,
+    );
+  }
+
+  // Target must not have an accounts row (password/OAuth-backed).
+  const [targetAccount] = await d
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(eq(accounts.userId, target.id))
+    .limit(1);
+
+  if (targetAccount) {
+    return c.json(
+      {
+        error: 'guest_is_real_account',
+        message: 'That handle belongs to a real account and cannot be claimed.',
+      },
+      409,
+    );
+  }
+
+  // Target must not have any valid (non-expired) sessions.
+  const [liveSession] = await d.execute<{ id: string }>(
+    sql`SELECT id FROM sessions WHERE user_id = ${target.id} AND expires_at > now() LIMIT 1`,
+  );
+  if (liveSession) {
+    return c.json(
+      {
+        error: 'guest_is_real_account',
+        message: 'That handle has active sessions and cannot be claimed.',
+      },
+      409,
+    );
+  }
+
+  // ── Check that the caller's current handle is not already "guestHandle"
+  // (edge case: caller already holds the target handle - treat as success-like
+  // scenario but as a collision to be safe).
+  // Also: check there's no OTHER non-guest user holding the handle who isn't
+  // the target. In practice this can't happen (handle is unique), but if
+  // someone else took it between the guest lookup and now, we should 400.
+  // The unique index on users.handle guarantees target is the only holder.
+  // We only need to guard against the caller already holding it.
+  if (user.handle === normalised) {
+    return c.json({ error: 'handle_collision', message: 'You already use that handle.' }, 400);
+  }
+
+  // ── Transactionally merge and rename ─────────────────────────────────────
+  const { matchesMerged, submissionsMerged, votesMerged } = await d.transaction(async (tx) => {
+    // Reassign match_players rows only where the caller doesn't already
+    // occupy that match (PK is (match_id, user_id)). Rows where the caller
+    // IS already in that match are left on the guest; the guest DELETE below
+    // cascades and removes them.
+    const mpRows = await tx.execute<{ match_id: string }>(
+      sql`UPDATE match_players mp
+          SET user_id = ${callerId}
+          WHERE mp.user_id = ${target.id}
+            AND NOT EXISTS (
+              SELECT 1 FROM match_players x
+               WHERE x.match_id = mp.match_id
+                 AND x.user_id  = ${callerId}
+            )
+          RETURNING mp.match_id`,
+    );
+
+    // Reassign submissions. No unique constraint on (match_id, user_id) so
+    // a plain UPDATE is safe.
+    const subRows = await tx.execute<{ id: string }>(
+      sql`UPDATE submissions
+          SET user_id = ${callerId}
+          WHERE user_id = ${target.id}
+          RETURNING id`,
+    );
+
+    // Reassign votes only where the caller hasn't already voted on the same
+    // (match, submission) pair. PK = (match_id, voter_id, submission_id).
+    const voteRows = await tx.execute<{ match_id: string }>(
+      sql`UPDATE votes v
+          SET voter_id = ${callerId}
+          WHERE v.voter_id = ${target.id}
+            AND NOT EXISTS (
+              SELECT 1 FROM votes x
+               WHERE x.match_id      = v.match_id
+                 AND x.voter_id      = ${callerId}
+                 AND x.submission_id = v.submission_id
+            )
+          RETURNING v.match_id`,
+    );
+
+    // Delete the guest user - cascades any remaining collision rows that
+    // couldn't be merged (the NOT EXISTS branches above left them on guest).
+    await tx.delete(users).where(eq(users.id, target.id));
+
+    // Update the caller's handle to the guest's handle. The guest row is
+    // already gone so the unique constraint is satisfied.
+    await tx
+      .update(users)
+      .set({ handle: normalised, updatedAt: new Date() })
+      .where(eq(users.id, callerId));
+
+    return {
+      matchesMerged: mpRows.length,
+      submissionsMerged: subRows.length,
+      votesMerged: voteRows.length,
+    };
+  });
+
+  return c.json(
+    {
+      newHandle: normalised,
+      stats: { matchesMerged, submissionsMerged, votesMerged },
     },
     200,
   );
