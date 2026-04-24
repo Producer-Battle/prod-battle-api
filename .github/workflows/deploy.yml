@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
 
+# Serialize deploys so rapid-fire main pushes don't race each other when
+# PATCHing the Scaleway container. Earlier runs finish, then the latest
+# commit rolls out. `cancel-in-progress: false` keeps the in-flight one
+# alive so we don't leave the container half-rolled.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
 env:
   REGISTRY: rg.fr-par.scw.cloud/prod-battle-registry
   IMAGE_NAME: prod-battle-api
@@ -164,18 +172,32 @@ jobs:
           FULL_IMAGE: ${{ steps.guard.outputs.full_image }}
         run: |
           echo "Rolling container ${CONTAINER_ID} to: ${FULL_IMAGE}"
-          HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
-            --request PATCH \
-            --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-            --header "Content-Type: application/json" \
-            --data "$(jq -nc --arg img "$FULL_IMAGE" '{registry_image: $img, redeploy: true}')" \
-            "${SCW_API_BASE}/${CONTAINER_ID}")
-          echo "HTTP status: ${HTTP_STATUS}"
-          cat /tmp/scw_response.json
-          if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
-            echo "::error::Scaleway PATCH returned non-2xx: ${HTTP_STATUS}"
+          # Scaleway returns 409 "resource is in a transient state" when a
+          # previous PATCH is still being processed. Retry with backoff up to
+          # ~3 minutes before giving up.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
+              --request PATCH \
+              --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
+              --header "Content-Type: application/json" \
+              --data "$(jq -nc --arg img "$FULL_IMAGE" '{registry_image: $img, redeploy: true}')" \
+              "${SCW_API_BASE}/${CONTAINER_ID}")
+            echo "[attempt ${attempt}/10] HTTP ${HTTP_STATUS}"
+            cat /tmp/scw_response.json
+            echo
+            if [[ "${HTTP_STATUS}" -ge 200 && "${HTTP_STATUS}" -lt 300 ]]; then
+              exit 0
+            fi
+            if [[ "${HTTP_STATUS}" == "409" ]]; then
+              echo "Transient 409 - waiting 20s before retrying..."
+              sleep 20
+              continue
+            fi
+            echo "::error::Scaleway PATCH returned non-retryable ${HTTP_STATUS}"
             exit 1
-          fi
+          done
+          echo "::error::Scaleway PATCH still 409 after 10 attempts (~3 min)"
+          exit 1
 
       - name: Wait for container to become ready
         if: steps.guard.outputs.skip != 'true'
