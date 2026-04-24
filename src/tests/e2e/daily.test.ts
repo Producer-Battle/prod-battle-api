@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   getJson,
@@ -10,6 +9,7 @@ import {
   submitTrack,
   uniqueHandle,
 } from '../harness.js';
+import { resetMatchState, seedTestFixtures } from '../seed.js';
 
 type DailyChallenge = {
   date: string;

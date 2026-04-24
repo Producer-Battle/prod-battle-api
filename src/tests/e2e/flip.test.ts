@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   createMatch,
@@ -12,6 +11,7 @@ import {
   uniqueHandle,
   voteForAll,
 } from '../harness.js';
+import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 
 describe('mode: flip (Sample Flip)', () => {
   const app = buildTestApp();
@@ -40,9 +40,11 @@ describe('mode: flip (Sample Flip)', () => {
     expect(match.flipSource?.label).toBe('test-flip-loop');
     expect(match.samplePack).not.toBeNull();
 
-    const handles = Array.from({ length: 3 }, (_, i) => uniqueHandle(`fp-${i}`));
+    const [host, ...rest] = Array.from({ length: 3 }, (_, i) => uniqueHandle(`fp-${i}`));
+    if (!host) throw new Error('handles[] empty');
+    const handles = [host, ...rest];
     for (const h of handles) await joinRoom(app, match.roomCode, h);
-    await startRoom(app, match.roomCode, handles[0]!);
+    await startRoom(app, match.roomCode, host);
 
     const ownSubmissionByHandle = new Map<string, string>();
     for (const h of handles) {

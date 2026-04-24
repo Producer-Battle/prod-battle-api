@@ -22,6 +22,12 @@ export type TestFixtures = {
   flipSourceId: string;
 };
 
+function unwrap<T>(rows: T[], what: string): T {
+  const r = rows[0];
+  if (!r) throw new Error(`[seed] insert did not return a row for ${what}`);
+  return r;
+}
+
 export async function seedTestFixtures(): Promise<TestFixtures> {
   const d = db();
 
@@ -30,9 +36,9 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
     .from(genres)
     .where(eq(genres.slug, TEST_GENRE_SLUG))
     .limit(1);
-  const genreId =
-    existingGenre?.id ??
-    (
+  let genreId = existingGenre?.id;
+  if (!genreId) {
+    const row = unwrap(
       await d
         .insert(genres)
         .values({
@@ -42,17 +48,20 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
           status: 'active',
           stemTypes: ['kick', 'snare', 'hihat', '808'],
         })
-        .returning()
-    )[0]!.id;
+        .returning(),
+      'genres',
+    );
+    genreId = row.id;
+  }
 
   const [existingPack] = await d
     .select()
     .from(samplePacks)
     .where(eq(samplePacks.genreId, genreId))
     .limit(1);
-  const packId =
-    existingPack?.id ??
-    (
+  let packId = existingPack?.id;
+  if (!packId) {
+    const row = unwrap(
       await d
         .insert(samplePacks)
         .values({
@@ -66,17 +75,20 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
             { stemType: '808', name: '808-01', url: 'https://example.com/808.wav' },
           ],
         })
-        .returning()
-    )[0]!.id;
+        .returning(),
+      'sample_packs',
+    );
+    packId = row.id;
+  }
 
   const [existingFlip] = await d
     .select()
     .from(flipSources)
     .where(eq(flipSources.genreId, genreId))
     .limit(1);
-  const flipSourceId =
-    existingFlip?.id ??
-    (
+  let flipSourceId = existingFlip?.id;
+  if (!flipSourceId) {
+    const row = unwrap(
       await d
         .insert(flipSources)
         .values({
@@ -87,8 +99,11 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
           durationSec: 8,
           active: true,
         })
-        .returning()
-    )[0]!.id;
+        .returning(),
+      'flip_sources',
+    );
+    flipSourceId = row.id;
+  }
 
   return { genreId, packId, flipSourceId };
 }

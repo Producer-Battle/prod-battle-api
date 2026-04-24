@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   createMatch,
@@ -12,6 +11,7 @@ import {
   uniqueHandle,
   voteForAll,
 } from '../harness.js';
+import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 
 describe('mode: quickplay', () => {
   const app = buildTestApp();
@@ -37,11 +37,13 @@ describe('mode: quickplay', () => {
     expect(match.genre.slug).toBe(TEST_GENRE_SLUG);
 
     // 4 players - quickplay's min-players gate.
-    const handles = Array.from({ length: 4 }, (_, i) => uniqueHandle(`qp-${i}`));
+    const [host, ...rest] = Array.from({ length: 4 }, (_, i) => uniqueHandle(`qp-${i}`));
+    if (!host) throw new Error('handles[] empty');
+    const handles = [host, ...rest];
     for (const h of handles) await joinRoom(app, match.roomCode, h);
 
     // Any seated player may start (no explicit host until auth lands).
-    await startRoom(app, match.roomCode, handles[0]!);
+    await startRoom(app, match.roomCode, host);
 
     const afterStart = await getMatch(app, match.roomCode);
     expect(afterStart.currentPhase).toBe('submit');

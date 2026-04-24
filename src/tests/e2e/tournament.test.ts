@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   createMatch,
@@ -12,6 +11,7 @@ import {
   uniqueHandle,
   voteForAll,
 } from '../harness.js';
+import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 
 describe('mode: tournament', () => {
   const app = buildTestApp();

@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   createMatch,
@@ -11,6 +10,7 @@ import {
   submitTrack,
   uniqueHandle,
 } from '../harness.js';
+import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 
 describe('mode: practice', () => {
   const app = buildTestApp();
@@ -51,11 +51,13 @@ describe('mode: practice', () => {
 
     const items = await getReveal(app, match.roomCode);
     expect(items).toHaveLength(1);
+    const [onlyItem] = items;
+    if (!onlyItem) throw new Error('expected one reveal item');
 
     // Self-vote must still be rejected in practice mode.
     const selfVote = await postJson(app, `/rooms/${match.roomCode}/vote`, {
       user: solo,
-      votes: [{ submissionId: items[0]!.submissionId, score: 5 }],
+      votes: [{ submissionId: onlyItem.submissionId, score: 5 }],
     });
     expect(selfVote.status).toBe(403);
   });

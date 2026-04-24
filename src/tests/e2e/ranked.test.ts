@@ -1,5 +1,4 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 import {
   buildTestApp,
   createMatch,
@@ -12,6 +11,7 @@ import {
   uniqueHandle,
   voteForAll,
 } from '../harness.js';
+import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures } from '../seed.js';
 
 describe('mode: ranked', () => {
   const app = buildTestApp();
@@ -35,9 +35,11 @@ describe('mode: ranked', () => {
     expect(match.teamCount).toBe(8);
     expect(match.genre.slug).toBe(TEST_GENRE_SLUG);
 
-    const handles = Array.from({ length: 4 }, (_, i) => uniqueHandle(`rk-${i}`));
+    const [host, ...rest] = Array.from({ length: 4 }, (_, i) => uniqueHandle(`rk-${i}`));
+    if (!host) throw new Error('handles[] empty');
+    const handles = [host, ...rest];
     for (const h of handles) await joinRoom(app, match.roomCode, h);
-    await startRoom(app, match.roomCode, handles[0]!);
+    await startRoom(app, match.roomCode, host);
 
     const ownSubmissionByHandle = new Map<string, string>();
     for (const h of handles) {

@@ -73,27 +73,17 @@ export async function createMatch(
   return json;
 }
 
-export async function joinRoom(
-  app: OpenAPIHono,
-  code: string,
-  handle: string,
-): Promise<string> {
-  const { status, json } = await postJson<{ userId: string }>(
-    app,
-    `/rooms/${code}/join`,
-    { user: handle },
-  );
+export async function joinRoom(app: OpenAPIHono, code: string, handle: string): Promise<string> {
+  const { status, json } = await postJson<{ userId: string }>(app, `/rooms/${code}/join`, {
+    user: handle,
+  });
   if (status !== 200) {
     throw new Error(`join(${handle}) failed: ${status} ${JSON.stringify(json)}`);
   }
   return json.userId;
 }
 
-export async function startRoom(
-  app: OpenAPIHono,
-  code: string,
-  handle: string,
-): Promise<void> {
+export async function startRoom(app: OpenAPIHono, code: string, handle: string): Promise<void> {
   const { status, json } = await postJson(app, `/rooms/${code}/start`, { user: handle });
   if (status !== 200) {
     throw new Error(`start failed: ${status} ${JSON.stringify(json)}`);
@@ -131,10 +121,7 @@ export async function submitTrack(
 export type RevealItem = { submissionId: string; label: string };
 
 export async function getReveal(app: OpenAPIHono, code: string): Promise<RevealItem[]> {
-  const { status, json } = await getJson<{ items: RevealItem[] }>(
-    app,
-    `/matches/${code}/reveal`,
-  );
+  const { status, json } = await getJson<{ items: RevealItem[] }>(app, `/matches/${code}/reveal`);
   if (status !== 200) {
     throw new Error(`reveal failed: ${status} ${JSON.stringify(json)}`);
   }
@@ -176,14 +163,8 @@ export type ResultsItem = {
   score: number;
 };
 
-export async function getResults(
-  app: OpenAPIHono,
-  code: string,
-): Promise<ResultsItem[]> {
-  const { status, json } = await getJson<{ items: ResultsItem[] }>(
-    app,
-    `/matches/${code}/results`,
-  );
+export async function getResults(app: OpenAPIHono, code: string): Promise<ResultsItem[]> {
+  const { status, json } = await getJson<{ items: ResultsItem[] }>(app, `/matches/${code}/results`);
   if (status !== 200) {
     throw new Error(`results failed: ${status} ${JSON.stringify(json)}`);
   }
