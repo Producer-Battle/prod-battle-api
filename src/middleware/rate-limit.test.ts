@@ -44,6 +44,7 @@ const FAKE_USER = {
   handle: 'test',
   role: 'producer' as const,
   plan: 'free' as const,
+  status: 'active' as const,
 };
 
 // Additional user fixtures for producer-quota tests.
@@ -53,6 +54,7 @@ const FREE_PRODUCER = {
   handle: 'free',
   role: 'producer' as const,
   plan: 'free' as const,
+  status: 'active' as const,
 };
 const PAID_PRODUCER = {
   id: 'paid-user-1',
@@ -60,6 +62,7 @@ const PAID_PRODUCER = {
   handle: 'paid',
   role: 'producer' as const,
   plan: 'paid' as const,
+  status: 'active' as const,
 };
 const ADMIN_USER = {
   id: 'admin-1',
@@ -67,6 +70,7 @@ const ADMIN_USER = {
   handle: 'admin',
   role: 'admin' as const,
   plan: 'free' as const,
+  status: 'active' as const,
 };
 const AR_USER = {
   id: 'ar-1',
@@ -74,6 +78,7 @@ const AR_USER = {
   handle: 'ar',
   role: 'ar' as const,
   plan: 'free' as const,
+  status: 'active' as const,
 };
 
 /**

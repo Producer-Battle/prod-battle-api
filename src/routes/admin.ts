@@ -102,6 +102,7 @@ adminRoutes.openapi(overviewRoute, async (c) => {
       COUNT(*) FILTER (WHERE role = 'ar')::text        AS ars,
       COUNT(*) FILTER (WHERE role = 'admin')::text     AS admins
     FROM users
+    WHERE status = 'active'
   `);
 
   const [matchCounts] = await d.execute<{ total: string; live: string }>(sql`
@@ -243,6 +244,10 @@ const listUsersRoute = createRoute({
     query: z.object({
       q: z.string().optional(), // ilike match on email OR handle
       role: z.enum(ROLES).optional(),
+      // active (default): normal users only - hides soft-deleted + archived.
+      // archived / deleted: only that bucket.
+      // all: every row regardless of status.
+      status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'),
       limit: z.coerce.number().int().min(1).max(100).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     }),
@@ -259,6 +264,7 @@ const listUsersRoute = createRoute({
                 email: z.string(),
                 handle: z.string(),
                 role: z.enum(ROLES),
+                status: z.enum(['active', 'archived', 'deleted']),
                 createdAt: z.string().datetime(),
               }),
             ),
@@ -279,21 +285,24 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
   const g = requireAdmin(c);
   if (!g.ok) return c.json(g.body, g.status);
 
-  const { q, role, limit, offset } = c.req.valid('query');
+  const { q, role, status, limit, offset } = c.req.valid('query');
   const d = db();
 
   const qLike = q ? `%${q}%` : null;
+  const statusFilter = status === 'all' ? null : status;
   const rows = await d.execute<{
     id: string;
     email: string;
     handle: string;
     role: 'producer' | 'ar' | 'admin';
+    status: 'active' | 'archived' | 'deleted';
     created_at: string;
   }>(sql`
-    SELECT id, email, handle, role, created_at
+    SELECT id, email, handle, role, status, created_at
       FROM users
      WHERE (${qLike}::text IS NULL OR email ILIKE ${qLike} OR handle ILIKE ${qLike})
        AND (${role ?? null}::user_role IS NULL OR role = ${role ?? null}::user_role)
+       AND (${statusFilter}::user_status IS NULL OR status = ${statusFilter}::user_status)
      ORDER BY created_at DESC
      LIMIT ${limit}
     OFFSET ${offset}
@@ -303,6 +312,7 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
     SELECT COUNT(*)::text AS n FROM users
      WHERE (${qLike}::text IS NULL OR email ILIKE ${qLike} OR handle ILIKE ${qLike})
        AND (${role ?? null}::user_role IS NULL OR role = ${role ?? null}::user_role)
+       AND (${statusFilter}::user_status IS NULL OR status = ${statusFilter}::user_status)
   `);
 
   return c.json(
@@ -312,6 +322,7 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
         email: r.email,
         handle: r.handle,
         role: r.role,
+        status: r.status,
         createdAt: new Date(r.created_at).toISOString(),
       })),
       total: Number(totalRow?.n ?? 0),
@@ -856,6 +867,7 @@ adminRoutes.openapi(deleteUserRoute, async (c) => {
       email: `${id}@deleted.local`,
       handle: `_deleted_${shortId}`,
       avatarUrl: null,
+      status: 'deleted',
       updatedAt: new Date(),
     })
     .where(eq(users.id, id))

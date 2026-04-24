@@ -21,6 +21,7 @@ export type AuthUser = {
   handle: string | null;
   role: 'producer' | 'ar' | 'admin';
   plan: 'free' | 'paid';
+  status: 'active' | 'archived' | 'deleted';
 };
 
 export type AuthSession = {
@@ -51,18 +52,26 @@ export function attachSession() {
           name?: string | null;
           role?: string;
           plan?: string;
+          status?: string;
         };
-        c.set('user', {
-          id: u.id,
-          email: u.email,
-          handle: u.handle ?? u.name ?? null,
-          role: (u.role as AuthUser['role']) ?? 'producer',
-          plan: (u.plan as AuthUser['plan']) ?? 'free',
-        });
-        c.set('session', {
-          id: result.session.id,
-          expiresAt: new Date(result.session.expiresAt),
-        });
+        // Non-active users (archived, deleted) can't act even if their
+        // session cookie survived - treat as anonymous. Admin soft-delete
+        // already revokes sessions, this is defence in depth.
+        const status = (u.status as AuthUser['status']) ?? 'active';
+        if (status === 'active') {
+          c.set('user', {
+            id: u.id,
+            email: u.email,
+            handle: u.handle ?? u.name ?? null,
+            role: (u.role as AuthUser['role']) ?? 'producer',
+            plan: (u.plan as AuthUser['plan']) ?? 'free',
+            status,
+          });
+          c.set('session', {
+            id: result.session.id,
+            expiresAt: new Date(result.session.expiresAt),
+          });
+        }
       }
     } catch (err) {
       // Session lookup errors (e.g. Redis blip if we ever move sessions

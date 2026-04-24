@@ -91,11 +91,25 @@ async function countAll(): Promise<void> {
       q: d.execute<CountRow>(sql`SELECT COUNT(*)::text FROM submission_tags`),
     },
     { label: 'votes', q: d.execute<CountRow>(sql`SELECT COUNT(*)::text FROM votes`) },
-    // Users by role
+    // Users broken down by role and status so the operator sees how many
+    // active producers will be wiped vs. soft-deleted rows that are already
+    // hidden (hard DELETE removes them all regardless).
     {
-      label: 'users (producer)',
+      label: 'users (producer, active)',
       q: d.execute<CountRow>(
-        sql`SELECT COUNT(*)::text FROM users WHERE role = 'producer'`,
+        sql`SELECT COUNT(*)::text FROM users WHERE role = 'producer' AND status = 'active'`,
+      ),
+    },
+    {
+      label: 'users (producer, archived)',
+      q: d.execute<CountRow>(
+        sql`SELECT COUNT(*)::text FROM users WHERE role = 'producer' AND status = 'archived'`,
+      ),
+    },
+    {
+      label: 'users (producer, deleted)',
+      q: d.execute<CountRow>(
+        sql`SELECT COUNT(*)::text FROM users WHERE role = 'producer' AND status = 'deleted'`,
       ),
     },
     {

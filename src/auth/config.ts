@@ -115,6 +115,12 @@ export const auth = betterAuth({
         defaultValue: 'free',
         input: false, // plan can't be self-assigned; set via payment webhook
       },
+      status: {
+        type: 'string',
+        required: false,
+        defaultValue: 'active',
+        input: false, // status is admin-managed; self-deactivate is future work
+      },
     },
   },
 

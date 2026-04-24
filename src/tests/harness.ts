@@ -29,6 +29,7 @@ export type BuildTestAppOptions = {
     email: string;
     role: AuthUser['role'];
     plan: AuthUser['plan'];
+    status?: AuthUser['status'];
   };
 };
 
@@ -36,7 +37,8 @@ export function buildTestApp(opts: BuildTestAppOptions = {}): OpenAPIHono {
   const app = new OpenAPIHono();
   app.use('*', anonId());
   if (opts.asUser) {
-    const stubUser = opts.asUser;
+    // Default to 'active' so callers can keep using the pre-status shape.
+    const stubUser: AuthUser = { status: 'active', ...opts.asUser };
     app.use(
       '*',
       createMiddleware(async (c, next) => {

@@ -25,6 +25,17 @@ export const userRole = pgEnum('user_role', ['producer', 'ar', 'admin']);
 
 export const userPlan = pgEnum('user_plan', ['free', 'paid']);
 
+// Lifecycle state for a user row.
+//   active   - normal, can sign in, appears in lists and leaderboards.
+//   archived - hidden from public UI + admin default views, but row is
+//              preserved and can be restored. Not currently used by any
+//              self-serve flow - placeholder for a future "deactivate my
+//              account" action.
+//   deleted  - admin hard-removed via soft-delete: email and handle are
+//              anonymised, sessions are revoked, attachSession treats as
+//              unauthenticated. Cannot be restored.
+export const userStatus = pgEnum('user_status', ['active', 'archived', 'deleted']);
+
 export const arStatus = pgEnum('ar_status', ['pending', 'approved', 'rejected']);
 
 export const genreKind = pgEnum('genre_kind', ['system', 'user']);
@@ -72,6 +83,7 @@ export const users = pgTable(
     handle: text().notNull(),
     role: userRole().notNull().default('producer'),
     plan: userPlan().notNull().default('free'),
+    status: userStatus().notNull().default('active'),
     avatarUrl: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
