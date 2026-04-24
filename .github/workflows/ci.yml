@@ -8,6 +8,35 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      # Real Postgres so the e2e suite exercises the schema + migrations.
+      # Credentials + DB name mirror what vitest.e2e expects (DATABASE_URL
+      # below). Name includes "test" so seed.ts's truncate guard passes.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pbtest
+          POSTGRES_PASSWORD: pbtest
+          POSTGRES_DB: prod_battle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U pbtest -d prod_battle_test"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgres://pbtest:pbtest@localhost:5432/prod_battle_test
+      # Placeholder values - the e2e suite mocks the S3 presigner so no
+      # real bucket is hit, but publicUrl() reads these to build audioUrl
+      # strings stored in the submissions table.
+      S3_ENDPOINT: http://localhost:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_BUCKET: pb-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: test
+      S3_SECRET_KEY: test
+      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -20,6 +49,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm db:migrate
+      - run: pnpm test:e2e
       - run: pnpm openapi:emit
       - uses: actions/upload-artifact@v4
         with:
