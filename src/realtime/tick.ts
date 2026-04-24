@@ -11,7 +11,9 @@
 // (dailyRolloverCheck) runs on the same tick cadence and transitions any
 // mode='daily' match whose daily_date < today from 'submit' to 'results'.
 
-import { and, lte, sql } from 'drizzle-orm';
+import { DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { sql } from 'drizzle-orm';
+import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches, votes } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
@@ -181,6 +183,156 @@ async function dailyRolloverCheck(): Promise<void> {
   }
 }
 
+// Throttle: only run the sweeper once every 30 seconds even though the
+// tick fires every 1s. Each rule is an indexed UPDATE/DELETE but there is
+// no point running them more than this.
+let lastSweepAt = 0;
+
+/**
+ * Cancel stale matches, hard-delete old cancelled matches, and prune
+ * orphaned uploaded sample packs (failed uploads that left zero samples).
+ *
+ * Runs on the 1s tick cadence but is gated to execute at most once every
+ * 30 seconds via the module-level `lastSweepAt` timestamp.
+ */
+export async function staleMatchSweep(): Promise<void> {
+  const now = Date.now();
+  if (now - lastSweepAt < 30_000) return;
+  lastSweepAt = now;
+
+  const d = db();
+
+  // Rule 1: empty lobby - no seated players after 10 minutes.
+  const emptyLobby = await d.execute<{ rowcount: number }>(
+    sql`WITH cancelled AS (
+          UPDATE matches
+             SET status = 'cancelled', ended_at = now()
+           WHERE status = 'lobby'
+             AND mode   != 'daily'
+             AND created_at < now() - interval '10 minutes'
+             AND NOT EXISTS (
+                   SELECT 1 FROM match_players mp
+                    WHERE mp.match_id = matches.id
+                      AND mp.is_spectator = false
+                 )
+           RETURNING id
+        )
+        SELECT COUNT(*)::int AS rowcount FROM cancelled`,
+  );
+  const emptyLobbyCount = Number((emptyLobby as Array<{ rowcount: number }>)[0]?.rowcount ?? 0);
+  if (emptyLobbyCount > 0) {
+    console.log(`[sweep] empty-lobby cancelled: ${emptyLobbyCount}`);
+  }
+
+  // Rule 2: lobby that was started (players joined) but never reached a
+  // battle_phase after 30 minutes.
+  const abandonedLobby = await d.execute<{ rowcount: number }>(
+    sql`WITH cancelled AS (
+          UPDATE matches
+             SET status = 'cancelled', ended_at = now()
+           WHERE status = 'lobby'
+             AND mode   != 'daily'
+             AND created_at < now() - interval '30 minutes'
+             AND NOT EXISTS (
+                   SELECT 1 FROM battle_phases bp
+                    WHERE bp.match_id = matches.id
+                 )
+           RETURNING id
+        )
+        SELECT COUNT(*)::int AS rowcount FROM cancelled`,
+  );
+  const abandonedLobbyCount = Number(
+    (abandonedLobby as Array<{ rowcount: number }>)[0]?.rowcount ?? 0,
+  );
+  if (abandonedLobbyCount > 0) {
+    console.log(`[sweep] started-but-abandoned cancelled: ${abandonedLobbyCount}`);
+  }
+
+  // Rule 3: submit phase with no submissions and timer expired by >5 minutes.
+  const staleSumit = await d.execute<{ rowcount: number }>(
+    sql`WITH cancelled AS (
+          UPDATE matches
+             SET status = 'cancelled', ended_at = now()
+           WHERE status = 'submit'
+             AND mode   != 'daily'
+             AND EXISTS (
+                   SELECT 1 FROM battle_phases bp
+                    WHERE bp.match_id = matches.id
+                      AND bp.current_phase = 'submit'
+                      AND bp.transitions_at < now() - interval '5 minutes'
+                 )
+             AND NOT EXISTS (
+                   SELECT 1 FROM submissions s
+                    WHERE s.match_id = matches.id
+                 )
+           RETURNING id
+        )
+        SELECT COUNT(*)::int AS rowcount FROM cancelled`,
+  );
+  const staleSubmitCount = Number((staleSumit as Array<{ rowcount: number }>)[0]?.rowcount ?? 0);
+  if (staleSubmitCount > 0) {
+    console.log(`[sweep] submit-with-no-submissions cancelled: ${staleSubmitCount}`);
+  }
+
+  // Rule 4: hard-delete cancelled matches older than 7 days.
+  // Collect S3 keys from cascading submissions first (best-effort).
+  const oldCancelled = await d.execute<{ id: string; audio_url: string }>(
+    sql`SELECT m.id, s.audio_url
+          FROM matches m
+          JOIN submissions s ON s.match_id = m.id
+         WHERE m.status = 'cancelled'
+           AND (m.ended_at IS NULL OR m.ended_at < now() - interval '7 days')
+           AND m.created_at < now() - interval '7 days'`,
+  );
+  const keysToDelete = (oldCancelled as Array<{ id: string; audio_url: string }>)
+    .map((r) => keyFromUrl(r.audio_url))
+    .filter((k): k is string => k !== null);
+
+  const deletedMatches = await d.execute<{ rowcount: number }>(
+    sql`WITH deleted AS (
+          DELETE FROM matches
+           WHERE status = 'cancelled'
+             AND (ended_at IS NULL OR ended_at < now() - interval '7 days')
+             AND created_at < now() - interval '7 days'
+           RETURNING id
+        )
+        SELECT COUNT(*)::int AS rowcount FROM deleted`,
+  );
+  const deletedMatchCount = Number(
+    (deletedMatches as Array<{ rowcount: number }>)[0]?.rowcount ?? 0,
+  );
+  if (deletedMatchCount > 0) {
+    console.log(`[sweep] old-cancelled matches deleted: ${deletedMatchCount}`);
+  }
+
+  // Best-effort S3 cleanup for the collected keys.
+  for (const key of keysToDelete) {
+    try {
+      await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+    } catch (err) {
+      console.warn(`[sweep] failed to delete S3 object ${key}:`, (err as Error).message);
+    }
+  }
+
+  // Rule 5: orphaned uploaded packs with zero samples older than 24 hours.
+  const orphanedPacks = await d.execute<{ rowcount: number }>(
+    sql`WITH deleted AS (
+          DELETE FROM sample_packs
+           WHERE kind = 'uploaded'
+             AND jsonb_array_length(samples) = 0
+             AND created_at < now() - interval '24 hours'
+           RETURNING id
+        )
+        SELECT COUNT(*)::int AS rowcount FROM deleted`,
+  );
+  const orphanedPackCount = Number(
+    (orphanedPacks as Array<{ rowcount: number }>)[0]?.rowcount ?? 0,
+  );
+  if (orphanedPackCount > 0) {
+    console.log(`[sweep] orphaned uploaded packs deleted: ${orphanedPackCount}`);
+  }
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -195,6 +347,7 @@ export function startTickLoop(): () => void {
       dailyRolloverCheck().catch((err: Error) =>
         console.error('[tick] daily rollover error:', err.message),
       );
+      staleMatchSweep().catch((err: Error) => console.error('[sweep] error:', err.message));
     }, 1000);
   });
 
