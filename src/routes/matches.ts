@@ -216,9 +216,17 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
                LIMIT 10`,
     );
 
-    const available = openLobbies.find(
-      (m) => Number(m.seated) < Number(m.team_size) * Number(m.team_count),
-    );
+    // Prefer lobbies that are still waiting for the 4-player minimum (1-3 seated)
+    // over those that are already at or above the minimum but still not full.
+    // This batches new players into the same lobby rather than fragmenting.
+    const waitingForMin = openLobbies.find((m) => Number(m.seated) > 0 && Number(m.seated) < 4);
+    const available =
+      waitingForMin ??
+      openLobbies.find(
+        (m) =>
+          Number(m.seated) >= 4 && Number(m.seated) < Number(m.team_size) * Number(m.team_count),
+      ) ??
+      openLobbies.find((m) => Number(m.seated) < Number(m.team_size) * Number(m.team_count));
     if (available) {
       const submitSeconds = available.submit_seconds ?? SUBMIT_SECONDS_DEFAULT[body.mode] ?? 300;
       return c.json(
@@ -332,6 +340,14 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   let created: typeof matches.$inferSelect | undefined;
   for (let attempt = 0; attempt < 5 && !created; attempt++) {
     const code = randomRoomCode();
+    // Quick Play and Ranked use FFA-8 (teamSize=1, teamCount=8) regardless
+    // of what the caller sends; the body's teamSize/teamCount defaults are
+    // preserved for private/tournament/practice/flip.
+    const effectiveTeamSize =
+      body.mode === 'quickplay' || body.mode === 'ranked' ? 1 : body.teamSize;
+    const effectiveTeamCount =
+      body.mode === 'quickplay' || body.mode === 'ranked' ? 8 : body.teamCount;
+
     try {
       const [row] = await d
         .insert(matches)
@@ -339,8 +355,8 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           mode: body.mode,
           status: 'lobby',
           roomCode: code,
-          teamSize: body.teamSize,
-          teamCount: body.teamCount,
+          teamSize: effectiveTeamSize,
+          teamCount: effectiveTeamCount,
           primaryGenreId: genre.id,
           submitSeconds,
           sampleMode,
@@ -368,7 +384,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
 
   // Seat the teams in advance so WS joiners have slots to map to.
   await d.insert(matchTeams).values(
-    Array.from({ length: body.teamCount }, (_, seat) => ({
+    Array.from({ length: match.teamCount }, (_, seat) => ({
       matchId: match.id,
       seat,
       name: String.fromCharCode(65 + seat),

@@ -39,15 +39,13 @@ export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
 };
 
 // Team sizes each mode allows. Private = everything. Others are fixed.
+// Quick Play and Ranked are FFA-8: teamSize=1, teamCount=8, up to 8 solo producers.
 export const ALLOWED_TEAM_LAYOUTS: Record<
   MatchMode,
   ReadonlyArray<{ teamSize: number; teamCount: number; label: string }>
 > = {
-  quickplay: [{ teamSize: 1, teamCount: 2, label: '1v1' }],
-  ranked: [
-    { teamSize: 1, teamCount: 2, label: '1v1' },
-    { teamSize: 2, teamCount: 2, label: '2v2' },
-  ],
+  quickplay: [{ teamSize: 1, teamCount: 8, label: 'FFA-8' }],
+  ranked: [{ teamSize: 1, teamCount: 8, label: 'FFA-8' }],
   private: [
     { teamSize: 1, teamCount: 2, label: '1v1' },
     { teamSize: 2, teamCount: 2, label: '2v2' },

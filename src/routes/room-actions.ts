@@ -170,6 +170,13 @@ roomActionsRoutes.post('/rooms/:code/ready', async (c) => {
   return c.json({ ok: true, ready: newReady });
 });
 
+// Minimum seated players before a Quick Play or Ranked lobby may start.
+// If this many players are not seated after the initial lobby wait, the match
+// waits in 60-second increments up to a 5-minute ceiling, then starts anyway
+// with whoever is seated (option b - start with what you have at the ceiling).
+const QP_RANKED_MIN_PLAYERS = 4;
+const QP_RANKED_LOBBY_CEILING_SEC = 5 * 60; // 5 minutes
+
 // ─── POST /rooms/:code/start ──────────────────────────────────────────────────
 
 roomActionsRoutes.post('/rooms/:code/start', async (c) => {
@@ -195,6 +202,39 @@ roomActionsRoutes.post('/rooms/:code/start', async (c) => {
   );
   const userId = (userRows[0] as { id: string } | undefined)?.id;
   if (!userId) return c.json({ error: 'user not found' }, 404);
+
+  // Quick Play and Ranked require at least QP_RANKED_MIN_PLAYERS seated before
+  // the match can start. If the caller tries to start early, check how old the
+  // lobby is. If it has not reached the 5-minute ceiling yet, reject with a
+  // "waiting_for_players" error so the client knows to keep waiting.
+  // Once the ceiling is reached, we start with whoever is present (option b).
+  if (match.mode === 'quickplay' || match.mode === 'ranked') {
+    const seatedRows = await d.execute<{ seated: number }>(
+      sql`SELECT COUNT(*)::int AS seated FROM match_players
+           WHERE match_id = ${match.id} AND is_spectator = false`,
+    );
+    const seated = (seatedRows[0] as { seated: number } | undefined)?.seated ?? 0;
+
+    if (seated < QP_RANKED_MIN_PLAYERS) {
+      const lobbyAgeMs = Date.now() - match.createdAt.getTime();
+      const atCeiling = lobbyAgeMs >= QP_RANKED_LOBBY_CEILING_SEC * 1000;
+      if (!atCeiling) {
+        return c.json(
+          {
+            error: 'waiting_for_players',
+            message: `Need at least ${QP_RANKED_MIN_PLAYERS} players to start. ${seated} seated so far.`,
+            seated,
+            minPlayers: QP_RANKED_MIN_PLAYERS,
+          },
+          400,
+        );
+      }
+      // At or past the 5-minute ceiling: start with whoever is present.
+      console.log(
+        `[room-actions] ${match.id}: lobby ceiling reached (${seated} players) - starting anyway`,
+      );
+    }
+  }
 
   const submitSeconds =
     match.submitSeconds ??

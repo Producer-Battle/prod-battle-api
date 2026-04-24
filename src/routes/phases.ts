@@ -120,8 +120,8 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   if (!m) return c.json({ error: 'match not found' }, 404);
 
   // Daily matches allow voting at any time (both 'submit' and 'results' status).
-  // All other modes require vote/reveal phase.
-  if (m.mode !== 'daily' && m.status !== 'vote' && m.status !== 'reveal') {
+  // All other modes require vote phase. 'reveal' is no longer a valid phase.
+  if (m.mode !== 'daily' && m.status !== 'vote') {
     return c.json({ error: `match not in vote phase (status=${m.status})` }, 400);
   }
 
@@ -152,13 +152,21 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     .where(eq(submissions.matchId, m.id));
   const subById = new Map(subs.map((s) => [s.id, s]));
 
+  // Self-vote check: if any vote targets the caller's own submission, reject
+  // the entire request with 403 rather than silently dropping it.
+  for (const v of body.votes) {
+    const s = subById.get(v.submissionId);
+    if (s && s.userId === u.id) {
+      return c.json({ error: 'self_vote', message: "You can't vote for your own track." }, 403);
+    }
+  }
+
   let accepted = 0;
   for (const v of body.votes) {
     const s = subById.get(v.submissionId);
     if (!s) continue; // bad id - ignore
-    if (s.userId === u.id) continue; // self-vote - ignore
 
-    // Upsert (match, voter, submission) → weight=score
+    // Upsert (match, voter, submission) -> weight=score
     await d
       .insert(votes)
       .values({
@@ -308,7 +316,7 @@ phasesRoutes.openapi(votableRoute, async (c) => {
           FROM matches m
           JOIN genres g ON g.id = m.primary_genre_id
           LEFT JOIN battle_phases bp ON bp.match_id = m.id
-         WHERE m.status IN ('vote', 'reveal')
+         WHERE m.status = 'vote'
            AND m.room_code IS NOT NULL
          ORDER BY m.started_at DESC NULLS LAST, m.created_at DESC
          LIMIT 20`,

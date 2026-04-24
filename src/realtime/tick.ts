@@ -3,6 +3,10 @@
 // `phase_change` event to Redis. Guarded by leader election (see leader.ts)
 // so only one replica ticks at a time.
 //
+// Phase lifecycle: lobby -> submit -> vote -> results
+// The 'reveal' phase was removed. Any in-flight match at status='reveal'
+// is flushed forward to 'vote' on the next tick (one-shot migration path).
+//
 // Daily matches are NOT driven by battle_phases. Instead, a separate check
 // (dailyRolloverCheck) runs on the same tick cadence and transitions any
 // mode='daily' match whose daily_date < today from 'submit' to 'results'.
@@ -12,24 +16,29 @@ import { db } from '../db/client.js';
 import { battlePhases, matches, votes } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { nextPhase } from '../room/state.js';
-import { onEnterPhase } from '../room/transitions.js';
+import { VOTE_SECONDS_DEFAULT, computeVoteDuration, onEnterPhase } from '../room/transitions.js';
 import { runAsLeader } from './leader.js';
 import { publish } from './pubsub.js';
 
 // Phase durations (seconds) for non-submit phases.
+// 'vote' is computed dynamically (max of configured + audio sum + buffer);
+// VOTE_SECONDS_DEFAULT is the floor used when no audio durations are known.
 const PHASE_DURATION: Record<string, number> = {
   lobby: 0,
   submit: 300, // fallback - match.submitSeconds takes precedence
-  reveal: 60,
-  vote: 90,
+  vote: VOTE_SECONDS_DEFAULT,
   results: 0, // terminal - no next phase
 };
 
 async function tick(): Promise<void> {
   const d = db();
-  const now = new Date();
+  // postgres-js doesn't auto-cast Date inside `sql` template literals - pass
+  // an ISO string + an explicit ::timestamptz cast instead, or the driver
+  // throws "Received an instance of Date" on every tick.
+  const nowIso = new Date().toISOString();
 
   // Select all phases that are due to transition, locking rows for this replica only.
+  // Also include any match stuck at 'reveal' (in-flight migration: flush to vote).
   const due = await d
     .select({
       matchId: battlePhases.matchId,
@@ -39,7 +48,10 @@ async function tick(): Promise<void> {
     })
     .from(battlePhases)
     .innerJoin(matches, sql`${matches.id} = ${battlePhases.matchId}`)
-    .where(and(lte(battlePhases.transitionsAt, now)))
+    .where(
+      sql`(${battlePhases.transitionsAt} <= ${nowIso}::timestamptz
+        OR ${battlePhases.currentPhase} = 'reveal'::match_phase)`,
+    )
     .for('update', { skipLocked: true });
 
   for (const row of due) {
@@ -50,15 +62,10 @@ async function tick(): Promise<void> {
       continue;
     }
 
-    // Omegle-style voting: when the vote phase times out, every seated
-    // player must have cast their votes - otherwise the round is voided.
-    // maybeAdvanceAfterVote (room/transitions.ts) fires this same transition
-    // early when the threshold is met, so reaching this branch *on the
-    // timer* means some player didn't vote in time.
-    //
-    // We wipe the accrued votes so the results phase tallies an empty set
-    // (no winner assigned, finalRank stays NULL). The frontend reads
-    // matches.voteOutcome = 'incomplete' off the broadcast event below.
+    // When the vote phase times out, check if everyone voted.
+    // maybeAdvanceAfterVote fires early when the threshold is met; reaching
+    // this branch on the timer means some players didn't vote in time.
+    // We discard the accrued votes so tallyResults assigns no winner.
     let voteOutcome: 'complete' | 'incomplete' = 'complete';
     if (row.currentPhase === 'vote' && next === 'results') {
       const outcomeRows = (await d.execute<{ seated: number; full: number }>(sql`
@@ -92,6 +99,10 @@ async function tick(): Promise<void> {
         row.submitSeconds ??
         SUBMIT_SECONDS_DEFAULT[row.matchMode as keyof typeof SUBMIT_SECONDS_DEFAULT] ??
         300;
+    } else if (next === 'vote') {
+      // Vote duration = max(configured floor, sum of audio durations + buffer).
+      // This ensures producers have time to listen to all tracks before voting.
+      durationSeconds = await computeVoteDuration(row.matchId, VOTE_SECONDS_DEFAULT);
     } else {
       durationSeconds = PHASE_DURATION[next] ?? 60;
     }
@@ -127,7 +138,7 @@ async function tick(): Promise<void> {
     // Domain side effects (vote tally etc.)
     await onEnterPhase(row.matchId, next);
 
-    console.log(`[tick] ${row.matchId}: ${row.currentPhase} → ${next}`);
+    console.log(`[tick] ${row.matchId}: ${row.currentPhase} -> ${next}`);
   }
 }
 
