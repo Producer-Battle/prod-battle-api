@@ -1,8 +1,8 @@
 // better-auth instance for the prod-battle API.
 //
 // Providers:
-//   - email + password (no verification gate - user.emailVerified defaults to
-//     true so sign-up lands the user straight into a session)
+//   - email + password (verification required - new sign-ups are held at
+//     emailVerified=false until the user clicks the link we send via SMTP)
 //   - Google OAuth (conditionally enabled - only if both env vars are set)
 //
 // Drizzle adapter backs all persistence (users, accounts, sessions,
@@ -54,10 +54,34 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // No verification friction - sign-up returns a live session immediately.
-    requireEmailVerification: false,
+    requireEmailVerification: true,
     minPasswordLength: 8,
     maxPasswordLength: 128,
+  },
+
+  emailVerification: {
+    sendVerificationEmail: async ({ user, url }) => {
+      // Use nodemailer via SMTP. The compose stack runs mailpit on :1025 in
+      // dev; prod uses Scaleway Transactional Email (same SMTP env vars).
+      const nodemailer = await import('nodemailer');
+      const transport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT ?? 1025),
+        secure: false,
+        auth: process.env.SMTP_USER
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+      });
+      await transport.sendMail({
+        from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
+        to: user.email,
+        subject: 'Confirm your Producer Battle account',
+        text: `Welcome to Producer Battle. Confirm your email: ${url}`,
+        html: `<p>Welcome to Producer Battle.</p><p><a href="${url}">Confirm your email</a></p>`,
+      });
+    },
+    sendOnSignUp: true,
+    expiresIn: 60 * 60 * 24, // 24h verification window
   },
 
   socialProviders: googleConfigured

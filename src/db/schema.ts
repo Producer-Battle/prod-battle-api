@@ -65,11 +65,10 @@ export const users = pgTable(
   {
     id: uuid().primaryKey().defaultRandom(),
     email: text().notNull(),
-    // Always true since we intentionally disabled email verification to
-    // remove signup friction. Kept as a column so better-auth's adapter
-    // contract is satisfied without custom mapping, and so we can flip
-    // verification on later without a migration.
-    emailVerified: boolean().notNull().default(true),
+    // False by default - new users must click the verification email before
+    // they can sign in. Existing rows keep their current value (no backfill).
+    // The e2e seed helper explicitly sets this to true for test users.
+    emailVerified: boolean().notNull().default(false),
     handle: text().notNull(),
     role: userRole().notNull().default('producer'),
     plan: userPlan().notNull().default('free'),
