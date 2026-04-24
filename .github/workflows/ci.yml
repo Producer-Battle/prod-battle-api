@@ -25,22 +25,11 @@ jobs:
           --health-interval=5s
           --health-timeout=3s
           --health-retries=10
-      # MinIO for the real-S3 integration tier. bitnami/minio defaults to
-      # server mode and creates the bucket named in MINIO_DEFAULT_BUCKETS at
-      # startup, so no bucket-create step is needed.
-      minio:
-        image: bitnami/minio:latest
-        ports:
-          - 9000:9000
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: pb-test
-        options: >-
-          --health-cmd="curl -f http://localhost:9000/minio/health/live"
-          --health-interval=5s
-          --health-timeout=3s
-          --health-retries=20
+      # MinIO for the real-S3 integration tier is started in an explicit
+      # step below (not a services.* container). The official minio/minio
+      # image needs `server /data` as its CMD, and services.* containers
+      # in GH Actions can't override CMD - so we `docker run` it directly
+      # and create the bucket with aws-cli.
     env:
       DATABASE_URL: postgres://pbtest:pbtest@localhost:5432/prod_battle_test
       # Placeholder values - the e2e suite mocks the S3 presigner so no
@@ -67,6 +56,26 @@ jobs:
       - run: pnpm test
       - run: pnpm db:migrate
       - run: pnpm test:e2e
+      - name: Start MinIO for integration tests
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in {1..30}; do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "minio is up"
+              break
+            fi
+            sleep 1
+          done
+          docker run --rm --network host \
+            -e AWS_ACCESS_KEY_ID=minioadmin \
+            -e AWS_SECRET_ACCESS_KEY=minioadmin \
+            amazon/aws-cli:latest \
+            --endpoint-url http://localhost:9000 \
+            s3 mb s3://pb-test
       - name: Run real-S3 integration tests
         run: pnpm test:integration
         env:
