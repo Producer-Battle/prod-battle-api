@@ -25,6 +25,22 @@ jobs:
           --health-interval=5s
           --health-timeout=3s
           --health-retries=10
+      # MinIO for the real-S3 integration tier. bitnami/minio defaults to
+      # server mode and creates the bucket named in MINIO_DEFAULT_BUCKETS at
+      # startup, so no bucket-create step is needed.
+      minio:
+        image: bitnami/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: pb-test
+        options: >-
+          --health-cmd="curl -f http://localhost:9000/minio/health/live"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
     env:
       DATABASE_URL: postgres://pbtest:pbtest@localhost:5432/prod_battle_test
       # Placeholder values - the e2e suite mocks the S3 presigner so no
@@ -51,6 +67,15 @@ jobs:
       - run: pnpm test
       - run: pnpm db:migrate
       - run: pnpm test:e2e
+      - name: Run real-S3 integration tests
+        run: pnpm test:integration
+        env:
+          S3_ENDPOINT: http://localhost:9000
+          S3_PUBLIC_ENDPOINT: http://localhost:9000
+          S3_BUCKET: pb-test
+          S3_REGION: us-east-1
+          S3_ACCESS_KEY: minioadmin
+          S3_SECRET_KEY: minioadmin
       - run: pnpm openapi:emit
       - uses: actions/upload-artifact@v4
         with:

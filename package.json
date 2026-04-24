@@ -18,6 +18,7 @@
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
     "test:watch": "vitest --config vitest.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx scripts/seed.ts",

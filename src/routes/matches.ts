@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
+import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import {
   flipSources,
@@ -401,7 +402,10 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       const pack = await generateMatchPack(match.id, resolvedSlug);
       // Link the pack back to the match.
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
-      generatedPack = { id: pack.id, samples: pack.samples };
+      const signedSamples = await Promise.all(
+        pack.samples.map(async (s) => ({ ...s, url: await signUrl(s.url, 3600) })),
+      );
+      generatedPack = { id: pack.id, samples: signedSamples };
     } catch (err) {
       // Pool not seeded yet is a non-fatal condition during local dev - log
       // a warning and continue so the match is still created.
@@ -425,7 +429,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
         ? {
             id: flipSource.id,
             label: flipSource.label,
-            url: flipSource.url,
+            url: await signUrl(flipSource.url, 3600),
             durationSec: flipSource.durationSec ?? null,
           }
         : null,
@@ -499,7 +503,10 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       .where(eq(samplePacks.id, row.samplePackId))
       .limit(1);
     if (pack) {
-      packPayload = { id: pack.id, samples: pack.samples };
+      const signedSamples = await Promise.all(
+        pack.samples.map(async (s) => ({ ...s, url: await signUrl(s.url, 3600) })),
+      );
+      packPayload = { id: pack.id, samples: signedSamples };
     }
   }
 
@@ -519,7 +526,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       flipSourcePayload = {
         id: fs.id,
         label: fs.label,
-        url: fs.url,
+        url: await signUrl(fs.url, 3600),
         durationSec: fs.durationSec ?? null,
       };
     }

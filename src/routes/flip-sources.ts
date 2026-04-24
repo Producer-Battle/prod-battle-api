@@ -5,6 +5,7 @@
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, desc, eq } from 'drizzle-orm';
+import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { flipSources, genres } from '../db/schema.js';
 
@@ -66,16 +67,15 @@ flipSourcesRoutes.openapi(listRoute, async (c) => {
     )
     .orderBy(desc(flipSources.createdAt));
 
-  return c.json(
-    {
-      items: rows.map((r) => ({
-        id: r.id,
-        label: r.label,
-        genreSlug: r.genreSlug ?? null,
-        url: r.url,
-        durationSec: r.durationSec ?? null,
-      })),
-    },
-    200,
+  const items = await Promise.all(
+    rows.map(async (r) => ({
+      id: r.id,
+      label: r.label,
+      genreSlug: r.genreSlug ?? null,
+      url: await signUrl(r.url, 3600),
+      durationSec: r.durationSec ?? null,
+    })),
   );
+
+  return c.json({ items }, 200);
 });
