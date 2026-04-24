@@ -15,11 +15,15 @@ import { bucket, publicUrl, s3, signUrl } from '../audio/s3.js';
 import { randomSongTitle } from '../audio/title.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users } from '../db/schema.js';
+import { requireProducerQuota } from '../middleware/rate-limit.js';
 import { maybeAdvanceAfterSubmission } from '../room/transitions.js';
 
 const DAILY_CAP = 20;
 
 export const submissionsRoutes = new OpenAPIHono();
+
+// Per-producer daily submission quota on the finalize endpoint only.
+submissionsRoutes.use('/rooms/:code/submission', requireProducerQuota('sub'));
 
 const UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
 const ALLOWED_CONTENT_TYPES = [

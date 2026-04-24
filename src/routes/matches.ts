@@ -16,12 +16,14 @@ import {
   PRIVATE_SUBMIT_SECONDS_PRESETS,
   SUBMIT_SECONDS_DEFAULT,
 } from '../matchmaking/defaults.js';
-import { requireMatchQuota } from '../middleware/rate-limit.js';
+import { requireMatchQuota, requireProducerQuota } from '../middleware/rate-limit.js';
 
 export const matchesRoutes = new OpenAPIHono();
 
-// Apply the anonymous match-creation quota only to POST /matches.
+// Apply the anonymous match-creation quota first, then the per-producer
+// daily quota for authenticated users.
 matchesRoutes.use('/matches', requireMatchQuota());
+matchesRoutes.use('/matches', requireProducerQuota('match'));
 
 // POST /matches rejects 'daily' - daily matches are server-created only via GET /daily-challenge.
 const MODES = ['quickplay', 'ranked', 'private', 'tournament', 'practice', 'flip'] as const;

@@ -121,3 +121,83 @@ export function requireMatchQuota() {
 export function _resetClientForTest(): void {
   _client = null;
 }
+
+// ─── Per-producer daily quotas ────────────────────────────────────────────────
+
+type ProducerQuotaKind = 'match' | 'sub' | 'pack' | 'genre';
+
+const PRODUCER_LIMITS_FREE: Record<ProducerQuotaKind, { max: number; ttl: number }> = {
+  match: { max: 20, ttl: 86_400 },
+  sub: { max: 32, ttl: 86_400 },
+  pack: { max: 5, ttl: 86_400 },
+  genre: { max: 1, ttl: 604_800 },
+};
+
+const PRODUCER_LIMITS_PAID: Record<ProducerQuotaKind, { max: number; ttl: number }> = {
+  match: { max: 100, ttl: 86_400 },
+  sub: { max: 160, ttl: 86_400 },
+  pack: { max: 25, ttl: 86_400 },
+  genre: { max: 5, ttl: 604_800 },
+};
+
+/**
+ * Apply to mutation endpoints to enforce per-user daily limits for
+ * authenticated producers. Admin and A&R roles bypass unconditionally.
+ * Unauthenticated requests pass through (handled by requireMatchQuota/anon
+ * middleware). Fails open when Redis is unavailable.
+ */
+export function requireProducerQuota(kind: ProducerQuotaKind) {
+  return createMiddleware(async (c, next) => {
+    const user = c.var.user;
+    // Unauthenticated: this middleware is producer-specific; anon middleware
+    // handles the anonymous path.
+    if (!user) {
+      await next();
+      return;
+    }
+    // Admin + A&R bypass all producer quotas.
+    if (user.role === 'admin' || user.role === 'ar') {
+      await next();
+      return;
+    }
+
+    const table = user.plan === 'paid' ? PRODUCER_LIMITS_PAID : PRODUCER_LIMITS_FREE;
+    const { max, ttl } = table[kind];
+    const key = `rl:producer:${kind}:${user.id}`;
+    let count = 0;
+
+    try {
+      const redis = getRedisClient();
+      count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, ttl);
+    } catch (err) {
+      console.warn('[rate-limit] producer redis unavailable:', (err as Error).message);
+      await next();
+      return;
+    }
+
+    if (count > max) {
+      let retryAfterSeconds = ttl;
+      try {
+        const redis = getRedisClient();
+        const t = await redis.ttl(key);
+        if (t > 0) retryAfterSeconds = t;
+      } catch {
+        /* ignore - fallback value already set */
+      }
+
+      c.header('Retry-After', String(retryAfterSeconds));
+      return c.json(
+        {
+          error: 'producer_quota_exceeded',
+          message: `Daily ${kind} limit reached. Upgrade to Pro for higher limits, or try again in ${Math.ceil(retryAfterSeconds / 3600)}h.`,
+          retryAfterSeconds,
+          limitKind: kind,
+        },
+        429,
+      );
+    }
+
+    await next();
+  });
+}

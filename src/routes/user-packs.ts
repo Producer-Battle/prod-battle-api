@@ -21,8 +21,13 @@ import { and, desc, eq } from 'drizzle-orm';
 import { bucket, publicUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { type SamplePackItem, genres, samplePacks } from '../db/schema.js';
+import { requireProducerQuota } from '../middleware/rate-limit.js';
 
 export const userPacksRoutes = new OpenAPIHono();
+
+// Per-producer daily pack-upload quota on the finalize endpoint only.
+// The upload-url step is per-sample and not the meaningful gate.
+userPacksRoutes.use('/user-packs', requireProducerQuota('pack'));
 
 const ErrorBody = z.object({ error: z.string(), message: z.string() });
 

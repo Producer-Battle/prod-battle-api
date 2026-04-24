@@ -2,8 +2,12 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { genreVotes, genres, samplePacks } from '../db/schema.js';
+import { requireProducerQuota } from '../middleware/rate-limit.js';
 
 export const genresRoutes = new OpenAPIHono();
+
+// Per-producer weekly genre-proposal quota on the create endpoint only.
+genresRoutes.use('/genres', requireProducerQuota('genre'));
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
