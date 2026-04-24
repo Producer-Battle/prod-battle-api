@@ -25,7 +25,8 @@
     "db:reset": "tsx scripts/reset-db.ts",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
-    "openapi:emit": "tsx scripts/emit-openapi.ts"
+    "openapi:emit": "tsx scripts/emit-openapi.ts",
+    "clear-prod": "node --env-file=.env --import tsx scripts/clear-prod.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1034.0",
@@ -37,6 +38,7 @@
     "drizzle-orm": "^0.38.3",
     "hono": "^4.6.14",
     "ioredis": "^5.4.2",
+    "nodemailer": "^8.0.6",
     "postgres": "^3.4.5",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
@@ -45,6 +47,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/archiver": "^7.0.0",
     "@types/node": "^22.10.5",
+    "@types/nodemailer": "^8.0.0",
     "@types/ws": "^8.5.13",
     "drizzle-kit": "^0.30.1",
     "tsx": "^4.19.2",
