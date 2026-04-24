@@ -10,6 +10,7 @@ import { genresRoutes } from './genres.js';
 import { healthRoutes } from './health.js';
 import { leaderboardRoutes } from './leaderboard.js';
 import { matchesRoutes } from './matches.js';
+import { meRoutes } from './me.js';
 import { phasesRoutes } from './phases.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
@@ -33,4 +34,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', adminFlipSourcesRoutes);
   app.route('/', adminPacksRoutes);
   app.route('/', flipSourcesRoutes);
+  app.route('/', meRoutes);
 }
