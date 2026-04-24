@@ -78,6 +78,13 @@
       "when": 1776960848214,
       "tag": "0010_mysterious_firedrake",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777036827701,
+      "tag": "0011_white_dark_beast",
+      "breakpoints": true
     }
   ]
 }

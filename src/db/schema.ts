@@ -23,6 +23,8 @@ import {
 
 export const userRole = pgEnum('user_role', ['producer', 'ar', 'admin']);
 
+export const userPlan = pgEnum('user_plan', ['free', 'paid']);
+
 export const arStatus = pgEnum('ar_status', ['pending', 'approved', 'rejected']);
 
 export const genreKind = pgEnum('genre_kind', ['system', 'user']);
@@ -70,6 +72,7 @@ export const users = pgTable(
     emailVerified: boolean().notNull().default(true),
     handle: text().notNull(),
     role: userRole().notNull().default('producer'),
+    plan: userPlan().notNull().default('free'),
     avatarUrl: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

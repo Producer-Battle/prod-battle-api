@@ -38,6 +38,7 @@ const FAKE_USER = {
   email: 'test@example.com',
   handle: 'test',
   role: 'producer' as const,
+  plan: 'free' as const,
 };
 
 /**

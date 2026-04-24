@@ -11,8 +11,9 @@
 
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { flipSources, genres, samplePacks } from '../db/schema.js';
+import { flipSources, genres, samplePacks, users } from '../db/schema.js';
 import { env } from '../env.js';
+import type { AuthUser } from '../middleware/session.js';
 
 export const TEST_GENRE_SLUG = 'phonk';
 
@@ -122,6 +123,52 @@ export async function seedTestFixtures(): Promise<TestFixtures> {
   }
 
   return { genreId, packId, flipSourceId };
+}
+
+/**
+ * Insert a user row with the given handle, plan, and role. Returns the shape
+ * expected by buildTestApp({ asUser: ... }). Email defaults to
+ * `${handle}@test.local`.
+ */
+export async function seedTestUser(
+  handle: string,
+  opts: { plan: AuthUser['plan']; role: AuthUser['role'] },
+): Promise<{
+  id: string;
+  handle: string;
+  email: string;
+  role: AuthUser['role'];
+  plan: AuthUser['plan'];
+}> {
+  const d = db();
+  const email = `${handle}@test.local`;
+  const [row] = await d
+    .insert(users)
+    .values({
+      handle,
+      email,
+      role: opts.role,
+      plan: opts.plan,
+      emailVerified: true,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (!row) {
+    // Row already exists (handle/email collision); look it up.
+    const [existing] = await d.select().from(users).where(eq(users.handle, handle)).limit(1);
+    if (!existing)
+      throw new Error(`[seed] seedTestUser: could not insert or find user "${handle}"`);
+    return {
+      id: existing.id,
+      handle: existing.handle,
+      email: existing.email,
+      role: opts.role,
+      plan: opts.plan,
+    };
+  }
+
+  return { id: row.id, handle: row.handle, email: row.email, role: opts.role, plan: opts.plan };
 }
 
 function assertTestDatabase(): void {

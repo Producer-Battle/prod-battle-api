@@ -20,6 +20,7 @@ export type AuthUser = {
   email: string;
   handle: string | null;
   role: 'producer' | 'ar' | 'admin';
+  plan: 'free' | 'paid';
 };
 
 export type AuthSession = {
@@ -49,12 +50,14 @@ export function attachSession() {
           handle?: string | null;
           name?: string | null;
           role?: string;
+          plan?: string;
         };
         c.set('user', {
           id: u.id,
           email: u.email,
           handle: u.handle ?? u.name ?? null,
           role: (u.role as AuthUser['role']) ?? 'producer',
+          plan: (u.plan as AuthUser['plan']) ?? 'free',
         });
         c.set('session', {
           id: result.session.id,
@@ -92,6 +95,24 @@ export function requireRole(...roles: AuthUser['role'][]) {
     }
     if (!roles.includes(user.role)) {
       return c.json({ error: 'forbidden', message: `Requires one of: ${roles.join(', ')}` }, 403);
+    }
+    await next();
+  });
+}
+
+/**
+ * 402 when no authenticated user, or when the user's plan is not 'paid'
+ * and their role is not 'admin'. Admin users bypass the paid gate.
+ * Use on routes that require a paid subscription (e.g. Daily Challenge).
+ */
+export function requirePaidTier() {
+  return createMiddleware(async (c, next) => {
+    const user = c.var.user;
+    if (!user || (user.plan !== 'paid' && user.role !== 'admin')) {
+      return c.json(
+        { error: 'payment_required', message: 'Daily Challenge is a Pro feature.' },
+        402,
+      );
     }
     await next();
   });

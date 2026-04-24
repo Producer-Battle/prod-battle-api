@@ -172,8 +172,15 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
     return c.json({ error: 'already submitted' }, 409);
   }
 
-  // For daily matches enforce the global 20-unique-submitter cap.
+  // For daily matches: enforce paid-tier gate then the 20-unique-submitter cap.
   if (result.match.mode === 'daily') {
+    const user = c.var.user;
+    if (!user || (user.plan !== 'paid' && user.role !== 'admin')) {
+      return c.json(
+        { error: 'payment_required', message: 'Daily Challenge is a Pro feature.' },
+        402,
+      );
+    }
     const capRows = await d.execute<{ n: number }>(
       sql`SELECT COUNT(DISTINCT user_id)::int AS n FROM submissions WHERE match_id = ${result.match.id}`,
     );

@@ -85,6 +85,12 @@ export const auth = betterAuth({
         defaultValue: 'producer',
         input: false, // role can't be self-assigned at sign-up; admins promote
       },
+      plan: {
+        type: 'string',
+        required: false,
+        defaultValue: 'free',
+        input: false, // plan can't be self-assigned; set via payment webhook
+      },
     },
   },
 

@@ -23,8 +23,12 @@ import { and, eq, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db/client.js';
 import { genres, matches, samplePacks } from '../db/schema.js';
+import { requirePaidTier } from '../middleware/session.js';
 
 export const dailyChallengeRoutes = new OpenAPIHono();
+
+// Paid-tier gate: free-tier and anonymous users receive 402. Admins bypass.
+dailyChallengeRoutes.use('/daily-challenge', requirePaidTier());
 
 const DAILY_CAP = 20;
 

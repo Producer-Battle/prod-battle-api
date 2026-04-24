@@ -19,33 +19,28 @@ import { registerRoutes } from '../routes/index.js';
 
 export type BuildTestAppOptions = {
   /**
-   * When set, installs a middleware that stubs c.var.user as an admin with
-   * this id. Omit (or leave undefined) to keep every request anonymous,
+   * When set, installs a middleware that stubs c.var.user with these exact
+   * values. Omit (or leave undefined) to keep every request anonymous,
    * which is the default behaviour used by all existing e2e test files.
    */
-  asAdminUserId?: string;
-  /**
-   * Override the role injected when asAdminUserId is set. Defaults to
-   * 'admin'. Pass 'producer' (or any other role) to test 403 paths.
-   */
-  role?: AuthUser['role'];
+  asUser?: {
+    id: string;
+    handle: string;
+    email: string;
+    role: AuthUser['role'];
+    plan: AuthUser['plan'];
+  };
 };
 
 export function buildTestApp(opts: BuildTestAppOptions = {}): OpenAPIHono {
   const app = new OpenAPIHono();
   app.use('*', anonId());
-  if (opts.asAdminUserId) {
-    const userId = opts.asAdminUserId;
-    const role: AuthUser['role'] = opts.role ?? 'admin';
+  if (opts.asUser) {
+    const stubUser = opts.asUser;
     app.use(
       '*',
       createMiddleware(async (c, next) => {
-        c.set('user', {
-          id: userId,
-          email: 'admin@test.local',
-          handle: 'admin',
-          role,
-        });
+        c.set('user', stubUser);
         await next();
       }),
     );

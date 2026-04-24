@@ -19,7 +19,15 @@ describe('admin GET /admin/sample-packs/:id/stems', () => {
   });
 
   it('200 - returns all seeded stems with signed URLs for an admin', async () => {
-    const app = buildTestApp({ asAdminUserId: randomUUID() });
+    const app = buildTestApp({
+      asUser: {
+        id: randomUUID(),
+        handle: 'admin',
+        email: 'admin@test.local',
+        role: 'admin',
+        plan: 'free',
+      },
+    });
     const { status, json } = await getJson<{
       items: { stemType: string; name: string; url: string; durationSec: number | null }[];
     }>(app, `/admin/sample-packs/${packId}/stems`);
@@ -47,13 +55,29 @@ describe('admin GET /admin/sample-packs/:id/stems', () => {
   });
 
   it('403 - non-admin role (producer)', async () => {
-    const app = buildTestApp({ asAdminUserId: randomUUID(), role: 'producer' });
+    const app = buildTestApp({
+      asUser: {
+        id: randomUUID(),
+        handle: 'producer1',
+        email: 'producer1@test.local',
+        role: 'producer',
+        plan: 'free',
+      },
+    });
     const { status } = await getJson(app, `/admin/sample-packs/${packId}/stems`);
     expect(status).toBe(403);
   });
 
   it('404 - non-existent pack id', async () => {
-    const app = buildTestApp({ asAdminUserId: randomUUID() });
+    const app = buildTestApp({
+      asUser: {
+        id: randomUUID(),
+        handle: 'admin2',
+        email: 'admin2@test.local',
+        role: 'admin',
+        plan: 'free',
+      },
+    });
     const missingId = randomUUID();
     const { status, json } = await getJson<{ error: string; message: string }>(
       app,
