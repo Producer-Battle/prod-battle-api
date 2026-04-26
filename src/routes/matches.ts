@@ -157,6 +157,25 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     return c.json({ error: 'daily matches cannot be created via POST /matches' }, 400);
   }
 
+  // Ranked match creation is a Pro feature. Free accounts can still JOIN
+  // ranked matches that paid producers create (matchmaking reuse path below
+  // is reached before this gate, so anon/free callers can land in an open
+  // ranked lobby by calling POST /matches with mode='ranked' too - they hit
+  // requireMatchQuota first, then this gate only when creating a NEW match).
+  if (body.mode === 'ranked') {
+    const user = c.var.user;
+    if (!user || (user.plan !== 'paid' && user.role !== 'admin' && user.role !== 'ar')) {
+      return c.json(
+        {
+          error: 'ranked_requires_pro',
+          message:
+            'Creating a ranked match is a Pro feature. Free accounts can join ranked matches other producers start.',
+        },
+        402,
+      );
+    }
+  }
+
   // ─── Matchmaking (Quick Play / Ranked) ──────────────────────────────────
   // If genre was not pinned by the caller (default for Quick Play), look
   // at open lobbies across ALL system genres - any free seat is a match.
