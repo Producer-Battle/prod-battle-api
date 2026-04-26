@@ -83,9 +83,10 @@ export const DEFAULT_SAMPLE_MODE: Record<MatchMode, 'none' | 'generated' | 'uplo
   private: 'generated',
   tournament: 'generated',
   practice: 'none',
-  // Flip matches also get a generated drum pack alongside the main flip
-  // source so producers have drums/bass to build around the loop.
-  flip: 'generated',
+  // Sample Flip ships only the flip source loop - producers should remix
+  // that one loop, no extra drum kit. The flipSourceId is mandatory at
+  // match creation; samplePackId stays NULL for flip matches.
+  flip: 'none',
   // Daily challenge uses a pool pack chosen deterministically from the date hash.
   // The pack is resolved at match creation, not generated on the fly.
   daily: 'generated',

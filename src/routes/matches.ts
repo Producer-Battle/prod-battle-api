@@ -275,11 +275,34 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   //   - else pick a random system genre.
   let resolvedSlug = body.genreSlug;
   if (!resolvedSlug) {
-    const systemGenres = await d.execute<{ slug: string }>(
-      sql`SELECT slug FROM genres WHERE kind = 'system' AND status = 'active'`,
-    );
+    // For modes that need a generated sample pack, restrict the random
+    // picker to genres that actually have at least one pool pack seeded.
+    // Without this filter we'd sometimes pick a genre with no packs and
+    // generateMatchPack would throw, leaving the match with samplePack=null.
+    // Sample Flip uses sample_mode='none', so it's allowed any active system genre.
+    const needsPack = DEFAULT_SAMPLE_MODE[body.mode] === 'generated';
+    const systemGenres = needsPack
+      ? await d.execute<{ slug: string }>(
+          sql`SELECT g.slug FROM genres g
+               WHERE g.kind = 'system' AND g.status = 'active'
+                 AND EXISTS (
+                   SELECT 1 FROM sample_packs sp
+                    WHERE sp.genre_id = g.id AND sp.kind = 'pool'
+                 )`,
+        )
+      : await d.execute<{ slug: string }>(
+          sql`SELECT slug FROM genres WHERE kind = 'system' AND status = 'active'`,
+        );
     if (systemGenres.length === 0) {
-      return c.json({ error: 'no system genres configured' }, 500);
+      return c.json(
+        {
+          error: 'no_system_genres_with_packs',
+          message: needsPack
+            ? 'No system genre has a pool pack seeded yet. Ask an admin to generate one.'
+            : 'No system genres configured.',
+        },
+        503,
+      );
     }
     resolvedSlug = (
       systemGenres[Math.floor(Math.random() * systemGenres.length)] as { slug: string }
@@ -428,9 +451,22 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       );
       generatedPack = { id: pack.id, samples: signedSamples };
     } catch (err) {
-      // Pool not seeded yet is a non-fatal condition during local dev - log
-      // a warning and continue so the match is still created.
-      console.warn('[matches] sample pack generation skipped:', (err as Error).message);
+      // No pool packs for this genre means the match is unplayable - the
+      // submit screen would render no kit and producers would have nothing
+      // to flip. Roll back the just-created match row and return 503 so the
+      // client can show a real error instead of dropping the user into an
+      // empty room.
+      console.warn('[matches] sample pack generation failed:', (err as Error).message);
+      await d.delete(matches).where(eq(matches.id, match.id));
+      return c.json(
+        {
+          error: 'pack_generation_failed',
+          message:
+            'Could not assemble a sample pack for this genre. An admin needs to generate a pool pack first.',
+          genreSlug: resolvedSlug,
+        },
+        503,
+      );
     }
   }
 

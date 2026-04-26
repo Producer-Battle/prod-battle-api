@@ -34,11 +34,10 @@ describe('mode: flip (Sample Flip)', () => {
     });
     expect(match.mode).toBe('flip');
     expect(match.teamCount).toBe(3);
-    // Flip resolves a source (we seeded one tagged to phonk) and generates
-    // a drum pack alongside it.
+    // Flip ships only the loop, no extra drum kit.
     expect(match.flipSource).not.toBeNull();
     expect(match.flipSource?.label).toBe('test-flip-loop');
-    expect(match.samplePack).not.toBeNull();
+    expect(match.samplePack).toBeNull();
 
     const [host, ...rest] = Array.from({ length: 3 }, (_, i) => uniqueHandle(`fp-${i}`));
     if (!host) throw new Error('handles[] empty');
