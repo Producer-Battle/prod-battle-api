@@ -3,6 +3,7 @@ import { adminFlipSourcesRoutes } from './admin-flip-sources.js';
 import { adminPacksRoutes } from './admin-packs.js';
 import { adminRoutes } from './admin.js';
 import { arRoutes } from './ar.js';
+import { billingRoutes } from './billing.js';
 import { dailyChallengeRoutes } from './daily-challenge.js';
 import { feedRoutes } from './feed.js';
 import { flipSourcesRoutes } from './flip-sources.js';
@@ -35,4 +36,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', adminPacksRoutes);
   app.route('/', flipSourcesRoutes);
   app.route('/', meRoutes);
+  app.route('/', billingRoutes);
 }

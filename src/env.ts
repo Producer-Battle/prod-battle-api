@@ -44,6 +44,12 @@ const envSchema = z.object({
 
   // Freesound.org APIv2 token - register at https://freesound.org/apiv2/apply/
   FREESOUND_API_KEY: z.string().optional(),
+
+  // Mollie payment API key. If unset:
+  //   POST /billing/checkout returns 503 billing_not_configured.
+  //   POST /billing/webhook returns 200 as a no-op (so Mollie doesn't retry).
+  // Set MOLLIE_API_KEY=test_... for test mode or live_... for production.
+  MOLLIE_API_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
