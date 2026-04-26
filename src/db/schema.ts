@@ -85,6 +85,9 @@ export const users = pgTable(
     plan: userPlan().notNull().default('free'),
     status: userStatus().notNull().default('active'),
     avatarUrl: text(),
+    // Mollie customer id - set when the user first initiates checkout.
+    // Null until then. Used to look up the user in the billing webhook.
+    mollieCustomerId: text(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
@@ -402,6 +405,11 @@ export const submissions = pgTable('submissions', {
   plays: integer().notNull().default(0),
   likes: integer().notNull().default(0),
   isPublic: boolean().notNull().default(true),
+  // Null for paid/admin users (submissions kept forever).
+  // Set to now + 30 days for free-tier users at finalize time.
+  // The staleMatchSweep rule 6 deletes rows where expires_at < now() and
+  // best-effort deletes the S3 audio object.
+  expiresAt: timestamp({ withTimezone: true }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

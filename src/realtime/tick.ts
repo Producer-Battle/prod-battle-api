@@ -331,6 +331,41 @@ export async function staleMatchSweep(): Promise<void> {
   if (orphanedPackCount > 0) {
     console.log(`[sweep] orphaned uploaded packs deleted: ${orphanedPackCount}`);
   }
+
+  // Rule 6: delete free-tier submissions whose expires_at has passed.
+  // Collect audio URLs first so we can best-effort remove the S3 objects.
+  const expiredSubs = await d.execute<{ id: string; audio_url: string }>(
+    sql`SELECT id, audio_url FROM submissions
+         WHERE expires_at IS NOT NULL AND expires_at < now()`,
+  );
+  const expiredSubRows = expiredSubs as Array<{ id: string; audio_url: string }>;
+  if (expiredSubRows.length > 0) {
+    const expiredSubKeys = expiredSubRows
+      .map((r) => keyFromUrl(r.audio_url))
+      .filter((k): k is string => k !== null);
+
+    const deletedSubs = await d.execute<{ rowcount: number }>(
+      sql`WITH deleted AS (
+            DELETE FROM submissions
+             WHERE expires_at IS NOT NULL AND expires_at < now()
+             RETURNING id
+          )
+          SELECT COUNT(*)::int AS rowcount FROM deleted`,
+    );
+    const deletedSubCount = Number((deletedSubs as Array<{ rowcount: number }>)[0]?.rowcount ?? 0);
+    if (deletedSubCount > 0) {
+      console.log(`[sweep] expired free-tier submissions deleted: ${deletedSubCount}`);
+    }
+
+    // Best-effort S3 cleanup for the audio files.
+    for (const key of expiredSubKeys) {
+      try {
+        await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+      } catch (err) {
+        console.warn(`[sweep] failed to delete S3 object ${key}:`, (err as Error).message);
+      }
+    }
+  }
 }
 
 /**

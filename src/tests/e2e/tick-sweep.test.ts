@@ -305,4 +305,118 @@ describe('staleMatchSweep', () => {
     );
     expect(rows as Array<{ id: string }>).toHaveLength(1);
   });
+
+  it('rule 6: deletes expired free-tier submissions (expires_at < now())', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+
+    const matchId = randomUUID();
+    const userId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO users (id, email, handle, role, plan)
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+    `);
+    await d.execute(sql`
+      INSERT INTO matches
+        (id, mode, status, team_size, team_count, primary_genre_id, created_at)
+      VALUES
+        (${matchId}, 'quickplay', 'results', 1, 8, ${genreId}, now() - interval '31 days')
+    `);
+
+    const subId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO submissions (id, match_id, user_id, genre_id, audio_url, expires_at)
+      VALUES (
+        ${subId},
+        ${matchId},
+        ${userId},
+        ${genreId},
+        'http://localhost:9000/pb-test/audio/expired.mp3',
+        now() - interval '1 day'
+      )
+    `);
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    const rows = await d.execute<{ id: string }>(
+      sql`SELECT id FROM submissions WHERE id = ${subId}`,
+    );
+    expect(rows as Array<{ id: string }>).toHaveLength(0);
+  });
+
+  it('rule 6: does NOT delete a free-tier submission that has not yet expired', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+
+    const matchId = randomUUID();
+    const userId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO users (id, email, handle, role, plan)
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+    `);
+    await d.execute(sql`
+      INSERT INTO matches
+        (id, mode, status, team_size, team_count, primary_genre_id, created_at)
+      VALUES
+        (${matchId}, 'quickplay', 'results', 1, 8, ${genreId}, now() - interval '10 days')
+    `);
+
+    const subId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO submissions (id, match_id, user_id, genre_id, audio_url, expires_at)
+      VALUES (
+        ${subId},
+        ${matchId},
+        ${userId},
+        ${genreId},
+        'http://localhost:9000/pb-test/audio/fresh.mp3',
+        now() + interval '20 days'
+      )
+    `);
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    const rows = await d.execute<{ id: string }>(
+      sql`SELECT id FROM submissions WHERE id = ${subId}`,
+    );
+    expect(rows as Array<{ id: string }>).toHaveLength(1);
+  });
+
+  it('rule 6: does NOT delete a paid-tier submission (expires_at IS NULL)', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+
+    const matchId = randomUUID();
+    const userId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO users (id, email, handle, role, plan)
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'paid')
+    `);
+    await d.execute(sql`
+      INSERT INTO matches
+        (id, mode, status, team_size, team_count, primary_genre_id, created_at)
+      VALUES
+        (${matchId}, 'quickplay', 'results', 1, 8, ${genreId}, now() - interval '60 days')
+    `);
+
+    const subId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO submissions (id, match_id, user_id, genre_id, audio_url, expires_at)
+      VALUES (
+        ${subId},
+        ${matchId},
+        ${userId},
+        ${genreId},
+        'http://localhost:9000/pb-test/audio/paid.mp3',
+        NULL
+      )
+    `);
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    const rows = await d.execute<{ id: string }>(
+      sql`SELECT id FROM submissions WHERE id = ${subId}`,
+    );
+    expect(rows as Array<{ id: string }>).toHaveLength(1);
+  });
 });

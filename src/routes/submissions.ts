@@ -198,6 +198,14 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
   // Auto-generate a title when the producer leaves it blank so the feed
   // never shows "Untitled". Producers can rename later from their profile.
   const title = body.title && body.title.trim().length > 0 ? body.title.trim() : randomSongTitle();
+
+  // Expiry: free-tier submissions are deleted after 30 days by the sweep worker.
+  // Paid users and admins keep their submissions indefinitely (expiresAt = null).
+  const uploader = c.var.user;
+  const isPaid =
+    uploader && (uploader.plan === 'paid' || uploader.role === 'admin' || uploader.role === 'ar');
+  const expiresAt = isPaid ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
   const [row] = await d
     .insert(submissions)
     .values({
@@ -209,6 +217,7 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
       title,
       description: body.description ?? null,
       isPublic: true,
+      expiresAt,
     })
     .returning();
 
