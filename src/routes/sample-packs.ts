@@ -91,7 +91,14 @@ const zipRoute = createRoute({
   path: '/matches/{code}/sample-pack/zip',
   tags: ['sample-packs'],
   summary: 'Download URL for the match pack as a ZIP',
-  request: { params: z.object({ code: z.string() }) },
+  request: {
+    params: z.object({ code: z.string() }),
+    query: z.object({
+      // format=mp3 (default, free): lower-quality path (transcoding deferred - see ADR in handler).
+      // format=wav (paid only): returns the pre-built WAV zip.
+      format: z.enum(['mp3', 'wav']).optional(),
+    }),
+  },
   responses: {
     200: {
       description: 'Download URL (pre-built for pool packs, built-on-demand otherwise)',
@@ -111,6 +118,24 @@ const zipRoute = createRoute({
 samplePacksRoutes.openapi(zipRoute, async (c) => {
   const { code } = c.req.valid('param');
   const d = db();
+
+  // Quality gate: ?format=wav requires a paid plan.
+  //
+  // ADR (deferred transcoding): the pack-zip files stored in S3 are already
+  // WAV bundles. We gate access here so free users nominally get the 'mp3'
+  // format path, but we do NOT yet transcode them - the actual zip returned
+  // is the same WAV bundle for both paths. A future commit will add a
+  // compressed-MP3 path (ffmpeg job via Scaleway Jobs) for the free tier.
+  // Until that work lands, format=mp3 callers get WAV quality behind the
+  // scenes, which is acceptable as a temporary over-delivery.
+  const format = c.req.query('format') ?? 'mp3';
+  if (format === 'wav') {
+    const user = c.var.user;
+    if (!user || (user.plan !== 'paid' && user.role !== 'admin')) {
+      return c.json({ error: 'paid_feature', message: 'WAV downloads are a Pro feature.' }, 402);
+    }
+  }
+
   const [row] = await d
     .select({ matchId: matches.id, pack: samplePacks })
     .from(matches)
