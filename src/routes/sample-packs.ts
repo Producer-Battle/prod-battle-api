@@ -11,11 +11,11 @@
 // upload flow.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, or } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { buildPackZip } from '../audio/zip.js';
 import { db } from '../db/client.js';
-import { matches, samplePacks } from '../db/schema.js';
+import { genres, matches, samplePacks } from '../db/schema.js';
 
 export const samplePacksRoutes = new OpenAPIHono();
 
@@ -158,4 +158,83 @@ samplePacksRoutes.openapi(zipRoute, async (c) => {
     console.error('[sample-packs] zip build failed:', (err as Error).message);
     return c.json({ error: 'could not build zip' }, 500);
   }
+});
+
+// ─── GET /sample-packs ──────────────────────────────────────────────────
+// Selectable packs for match creation. Returns:
+//   - all kind='pool' packs (admin-curated, anyone can use)
+//   - the caller's own kind='uploaded' packs (only theirs)
+// Optionally filtered by genre. Used by the /play UI's pack picker.
+
+const SelectablePackSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  kind: z.enum(['pool', 'uploaded']),
+  genre: z.object({ slug: z.string(), name: z.string() }),
+  stemCount: z.number().int(),
+  isMine: z.boolean(),
+});
+
+const listSelectableRoute = createRoute({
+  method: 'get',
+  path: '/sample-packs',
+  tags: ['sample-packs'],
+  summary: 'List packs the caller can pick when creating a match.',
+  request: {
+    query: z.object({ genreSlug: z.string().optional() }),
+  },
+  responses: {
+    200: {
+      description: 'Pool packs + your own uploaded packs',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(SelectablePackSchema) }) },
+      },
+    },
+  },
+});
+
+samplePacksRoutes.openapi(listSelectableRoute, async (c) => {
+  const { genreSlug } = c.req.valid('query');
+  const callerId = c.var.user?.id ?? null;
+  const d = db();
+
+  const genreFilter = genreSlug ? and(eq(genres.slug, genreSlug)) : undefined;
+  // pool packs OR (uploaded packs created by the caller)
+  const visibility = callerId
+    ? or(
+        eq(samplePacks.kind, 'pool'),
+        and(eq(samplePacks.kind, 'uploaded'), eq(samplePacks.createdBy, callerId)),
+      )
+    : eq(samplePacks.kind, 'pool');
+
+  const rows = await d
+    .select({
+      id: samplePacks.id,
+      name: samplePacks.name,
+      kind: samplePacks.kind,
+      samples: samplePacks.samples,
+      createdBy: samplePacks.createdBy,
+      genreSlug: genres.slug,
+      genreName: genres.name,
+    })
+    .from(samplePacks)
+    .innerJoin(genres, eq(genres.id, samplePacks.genreId))
+    .where(genreFilter ? and(visibility, genreFilter) : visibility)
+    .orderBy(desc(samplePacks.createdAt));
+
+  return c.json(
+    {
+      items: rows
+        .filter((r) => r.kind !== 'generated')
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          kind: r.kind as 'pool' | 'uploaded',
+          genre: { slug: r.genreSlug, name: r.genreName },
+          stemCount: (r.samples ?? []).length,
+          isMine: callerId !== null && r.createdBy === callerId,
+        })),
+    },
+    200,
+  );
 });

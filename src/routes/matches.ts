@@ -64,6 +64,12 @@ const CreateMatchBody = z
     // Optional Sample Flip source override. When null/missing the server
     // picks a random active flip source (filtered by genre if present).
     flipSourceId: z.string().uuid().optional(),
+    // Optional sample-pack override. When provided, that pack is attached
+    // to the match instead of a random one. Validation rules:
+    //   - kind='pool' packs are open to anyone
+    //   - kind='uploaded' packs only usable by their createdBy owner
+    // The pack's genre must match body.genreSlug (or the resolved genre).
+    samplePackId: z.string().uuid().optional(),
   })
   .refine(
     (v) =>
@@ -438,7 +444,47 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   } | null = null;
   if (sampleMode === 'generated') {
     try {
-      const pack = await generateMatchPack(match.id, resolvedSlug);
+      // If the caller passed an explicit samplePackId, honour it (after
+      // ownership + genre-match checks); otherwise pick a random pool pack.
+      let pack: typeof samplePacks.$inferSelect;
+      if (body.samplePackId) {
+        const [picked] = await d
+          .select()
+          .from(samplePacks)
+          .where(eq(samplePacks.id, body.samplePackId))
+          .limit(1);
+        if (!picked) {
+          await d.delete(matches).where(eq(matches.id, match.id));
+          return c.json({ error: 'pack_not_found', message: 'samplePackId does not exist.' }, 404);
+        }
+        if (picked.genreId !== genre.id) {
+          await d.delete(matches).where(eq(matches.id, match.id));
+          return c.json(
+            {
+              error: 'pack_genre_mismatch',
+              message: `Pack belongs to a different genre than ${genre.slug}.`,
+            },
+            400,
+          );
+        }
+        const callerId = c.var.user?.id ?? null;
+        const isPool = picked.kind === 'pool';
+        const isMine = picked.kind === 'uploaded' && picked.createdBy === callerId;
+        if (!isPool && !isMine) {
+          await d.delete(matches).where(eq(matches.id, match.id));
+          return c.json(
+            {
+              error: 'pack_not_usable',
+              message:
+                'You can only pick pool packs or your own uploaded packs. Ask an admin to promote it to the pool to share.',
+            },
+            403,
+          );
+        }
+        pack = picked;
+      } else {
+        pack = await generateMatchPack(match.id, resolvedSlug);
+      }
       // Link the pack back to the match.
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
       const signedSamples = await Promise.all(

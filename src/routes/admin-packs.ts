@@ -378,6 +378,91 @@ adminPacksRoutes.openapi(generatePoolPackRoute, async (c) => {
   );
 });
 
+// ─── POST /admin/sample-packs/:id/promote ───────────────────────────────────
+// Flip a user-uploaded pack to kind='pool' so anyone can use it in matches.
+// One-way for now (delete + re-upload to undo). The pack's createdBy is
+// preserved as an audit attribution.
+
+const promotePackRoute = createRoute({
+  method: 'post',
+  path: '/admin/sample-packs/{id}/promote',
+  tags: ['admin', 'sample-packs'],
+  summary: 'Promote a kind=uploaded pack to kind=pool (anyone can use).',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: { description: 'Promoted', content: { 'application/json': { schema: PackRow } } },
+    400: { description: 'Already pool', content: { 'application/json': { schema: AdminError } } },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminPacksRoutes.openapi(promotePackRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [existing] = await d
+    .select({ id: samplePacks.id, kind: samplePacks.kind })
+    .from(samplePacks)
+    .where(eq(samplePacks.id, id))
+    .limit(1);
+  if (!existing) return c.json({ error: 'not_found', message: 'Pack not found.' }, 404);
+  if (existing.kind === 'pool') {
+    return c.json({ error: 'already_pool', message: 'Pack is already pool.' }, 400);
+  }
+  if (existing.kind !== 'uploaded') {
+    return c.json(
+      { error: 'wrong_kind', message: 'Only kind=uploaded packs can be promoted.' },
+      400,
+    );
+  }
+
+  await d.update(samplePacks).set({ kind: 'pool' }).where(eq(samplePacks.id, id));
+
+  const [row] = await d.execute<{
+    id: string;
+    genre_id: string;
+    genre_slug: string;
+    genre_name: string;
+    kind: 'uploaded' | 'generated' | 'pool';
+    name: string;
+    stem_count: number;
+    created_at: string;
+    created_by_handle: string | null;
+  }>(sql`
+    SELECT sp.id, sp.genre_id, g.slug AS genre_slug, g.name AS genre_name,
+           sp.kind, sp.name, jsonb_array_length(sp.samples) AS stem_count,
+           sp.created_at, u.handle AS created_by_handle
+      FROM sample_packs sp
+      JOIN genres g ON g.id = sp.genre_id
+      LEFT JOIN users u ON u.id = sp.created_by
+     WHERE sp.id = ${id}
+  `);
+  if (!row) return c.json({ error: 'not_found', message: 'Pack not found.' }, 404);
+
+  return c.json(
+    {
+      id: row.id,
+      genreId: row.genre_id,
+      genreSlug: row.genre_slug,
+      genreName: row.genre_name,
+      kind: row.kind,
+      name: row.name,
+      stemCount: Number(row.stem_count),
+      createdAt: new Date(row.created_at).toISOString(),
+      createdByHandle: row.created_by_handle ?? null,
+    },
+    200,
+  );
+});
+
 // ─── DELETE /admin/sample-packs/:id ─────────────────────────────────────────
 
 const deletePackRoute = createRoute({
