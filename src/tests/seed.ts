@@ -11,8 +11,9 @@
 
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { flipSources, genres, samplePacks, users } from '../db/schema.js';
+import { flipSources, gameRules, genres, samplePacks, seasons, users } from '../db/schema.js';
 import { env } from '../env.js';
+import { _resetCacheForTest } from '../game-rules/loader.js';
 import type { AuthUser } from '../middleware/session.js';
 
 export const TEST_GENRE_SLUG = 'phonk';
@@ -29,7 +30,143 @@ function unwrap<T>(rows: T[], what: string): T {
   return r;
 }
 
+// Idempotently re-seed game_rules + the active season after a TRUNCATE.
+// Both tables have FKs to users (game_rules.updated_by, no FK on seasons)
+// so TRUNCATE CASCADE on users wipes game_rules. Tests need both to exist
+// for any code that reads honor/tier/voting rules or the active-season id.
+async function seedRulesAndSeasons(): Promise<void> {
+  const d = db();
+
+  // Active season covering "now". Single all-encompassing range so any
+  // test running at any wall-clock time finds an active row.
+  await d
+    .insert(seasons)
+    .values({
+      slug: 'test-season',
+      startsAt: new Date('2020-01-01T00:00:00Z'),
+      endsAt: new Date('2099-01-01T00:00:00Z'),
+    })
+    .onConflictDoNothing();
+
+  // Defaults mirror migration 0017. Kept minimal here - tests only
+  // need the values they actually exercise; the migration is the
+  // source of truth for production payloads.
+  const ruleSeed: Array<{ category: string; payload: object }> = [
+    {
+      category: 'honor',
+      payload: {
+        start: 100,
+        max: 100,
+        regenPerCleanDay: 1,
+        regenBurstPerCleanQpMatches: { matches: 10, amount: 5 },
+        firstOffenceWindowDays: 30,
+        firstOffenceMultiplier: 0.5,
+        penalties: {
+          quickplay_lobby: -1,
+          quickplay_mid: -2,
+          quickplay_empty: -3,
+          ranked_lobby: -2,
+          ranked_mid: -5,
+          ranked_empty: -3,
+          private_lobby: -1,
+          private_mid: -2,
+          private_empty: -2,
+          flip_lobby: -1,
+          flip_mid: -2,
+          flip_empty: -3,
+          daily_lobby: -1,
+          daily_mid: -2,
+          daily_empty: -3,
+          tournament_lobby: -3,
+          tournament_mid: -10,
+          tournament_empty: -5,
+          dmca_first: -5,
+          dmca_second: -15,
+          dmca_third: -25,
+          vote_ring_confirmed: -50,
+        },
+        gates: { tournament: 70, ranked: 50, privateHosting: 30, readOnlyBelow: 10 },
+        perks: {
+          trustedAt: 90,
+          voteWeightBoostAt: 90,
+          voteWeightBoostMultiplier: 1.5,
+          extraQuickplaySlotAt: 95,
+          extraQuickplaySlotAfterDays: 30,
+        },
+      },
+    },
+    {
+      category: 'tiers',
+      payload: {
+        calibrationMatches: 10,
+        softResetPercent: 0.6,
+        softResetFloorOffset: -1,
+        lpClampBase: 30,
+        lpClampPerLp: 200,
+        boundaries: [
+          { name: 'bronze', min: 0, max: 100 },
+          { name: 'silver', min: 100, max: 250 },
+          { name: 'gold', min: 250, max: 500 },
+          { name: 'platinum', min: 500, max: 1000 },
+          { name: 'diamond', min: 1000, max: 2000 },
+          { name: 'master', min: 2000, max: 3500 },
+          { name: 'grandmaster', min: 3500, max: null },
+        ],
+        subdivisions: 3,
+        promoSeriesEnabled: false,
+      },
+    },
+    {
+      category: 'voting',
+      payload: {
+        minMatchesBeforeVotesCount: 3,
+        selfVoteAllowed: false,
+        downvotesEnabled: false,
+        honorWeightCurve: [
+          { honorMin: 0, weight: 0 },
+          { honorMin: 30, weight: 1.0 },
+          { honorMin: 90, weight: 1.5 },
+          { honorMin: 100, weight: 1.5 },
+        ],
+        premiumVoteWeightBonus: 0.25,
+        velocityCapPerSubmissionPerHour: 30,
+        ringDetection: { enabled: true, minMutualVotePairs: 5, maxIntervalMinutes: 5 },
+      },
+    },
+    {
+      category: 'revenue',
+      payload: {
+        creatorPoolPercentOfPremium: 5,
+        minPayoutThresholdCents: 500,
+        rolloverIfBelow: true,
+        payoutCadenceDays: 30,
+      },
+    },
+    {
+      category: 'achievements',
+      payload: {
+        enabled: { tier_grandmaster: true, daily_champion: true, match_streak_7: true },
+      },
+    },
+    {
+      category: 'reconnect',
+      payload: {
+        graceSeconds: 120,
+        lobbyAutoReadyTimeoutSeconds: 60,
+        heartbeatIntervalSeconds: 15,
+      },
+    },
+  ];
+  for (const r of ruleSeed) {
+    await d.insert(gameRules).values(r).onConflictDoNothing();
+  }
+
+  // Bust the loader cache so the next read reflects what we just wrote.
+  _resetCacheForTest();
+}
+
 export async function seedTestFixtures(): Promise<TestFixtures> {
+  await seedRulesAndSeasons();
   const d = db();
 
   const [existingGenre] = await d

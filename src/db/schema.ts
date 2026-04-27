@@ -88,6 +88,23 @@ export const users = pgTable(
     // Mollie customer id - set when the user first initiates checkout.
     // Null until then. Used to look up the user in the billing webhook.
     mollieCustomerId: text(),
+    // Honor score 0-100. Drops on abandons, empty submissions, confirmed bad
+    // behaviour. Regenerates +1/day on clean play. Gates access to ranked /
+    // tournament / private hosting at low values - see middleware/honor.ts.
+    // Penalty / regen / gate values are configurable via game_rules.
+    honor: integer().notNull().default(100),
+    // Number of remaining ranked matches before LP is shown to the user.
+    // Decremented on each completed ranked match. While > 0, the UI hides
+    // LP and tier and instead shows "calibrating (N matches left)".
+    calibrationMatchesRemaining: integer().notNull().default(10),
+    // Per-section profile visibility. Public profile shows all sections by
+    // default; user can hide individual sections. JSON shape:
+    //   { matchHistory: bool, stats: bool, packs: bool, achievements: bool }
+    // Missing keys default to true.
+    profileVisibility: jsonb()
+      .$type<Partial<Record<'matchHistory' | 'stats' | 'packs' | 'achievements', boolean>>>()
+      .notNull()
+      .default({}),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
@@ -359,6 +376,20 @@ export const matchPlayers = pgTable(
     ready: boolean().notNull().default(false),
     finalRank: integer(),
     joinedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    // Set true when the player misses the 120s reconnect grace window or
+    // submits nothing. Honor / LP outcomes treat abandoned players as
+    // forfeit; they don't get reward credit.
+    abandoned: boolean().notNull().default(false),
+    // Set when the player saw the results screen for this match. Used (with
+    // abandoned=false) by applyMatchOutcome to gate XP / LP / quota credit.
+    completedAt: timestamp({ withTimezone: true }),
+    // Recorded honor delta this match contributed to the player's score.
+    // Stored so admins can audit outcomes and so the regen cron can reason
+    // about cumulative penalty in a window.
+    honorDelta: integer().notNull().default(0),
+    // Recorded LP / Glicko delta. The actual rating lives in `rankings`;
+    // this column is the per-match record for display + audit.
+    lpDelta: integer().notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.matchId, t.userId] })],
 );
@@ -627,4 +658,69 @@ export const verifications = pgTable('verifications', {
   expiresAt: timestamp({ withTimezone: true }).notNull(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Achievements - one row per (user, achievementKey) pair. Earning is
+ * idempotent (a duplicate INSERT ON CONFLICT DO NOTHING is fine). The
+ * full catalogue of keys is defined in src/achievements/catalogue.ts;
+ * this table just records who has earned what and when.
+ *
+ * `hiddenByUser` lets a user hide a specific achievement from their
+ * public profile without losing the earned record.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const achievements = pgTable(
+  'achievements',
+  {
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    achievementKey: text().notNull(),
+    earnedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    hiddenByUser: boolean().notNull().default(false),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.achievementKey] })],
+);
+
+/*
+ * Pack plays - one row per match-start that consumed a sample pack.
+ * Used to compute creator revenue share (5% of premium revenue
+ * distributed monthly by play-share). Inserted by the match-create
+ * handler after a pack is locked in. Cheap append-only ledger.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const packPlays = pgTable('pack_plays', {
+  id: uuid().primaryKey().defaultRandom(),
+  packId: uuid()
+    .notNull()
+    .references(() => samplePacks.id, { onDelete: 'cascade' }),
+  matchId: uuid()
+    .notNull()
+    .references(() => matches.id, { onDelete: 'cascade' }),
+  playedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Game rules - admin-tunable knobs for honor / tiers / voting / revenue.
+ * One row per category. Payload is a JSONB blob with category-specific
+ * keys. Loaded once at server start and cached in-process; admin writes
+ * bump a version that triggers an in-process refresh via Redis pub/sub.
+ *
+ * Categories shipped at migration time (with default payloads):
+ *   - 'honor'       : per-mode penalty + regen + gate values
+ *   - 'tiers'       : LP boundaries + calibration count + soft-reset %
+ *   - 'voting'      : min-matches gate + honor weight curve + velocity caps
+ *   - 'revenue'     : creator pool % + payout threshold
+ *   - 'achievements': enable/disable map per achievement key
+ *
+ * Hardcoded constants in src/middleware, src/honor, src/tiers etc. read
+ * from this table - never hardcode the value at the call site.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const gameRules = pgTable('game_rules', {
+  category: text().primaryKey(),
+  payload: jsonb().notNull(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
 });
