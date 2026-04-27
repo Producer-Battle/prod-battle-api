@@ -152,6 +152,8 @@ const submitRoute = createRoute({
         },
       },
     },
+    400: { description: 'Submission rejected (e.g. low_quality from RMS gate)' },
+    402: { description: 'Daily Challenge requires premium' },
     404: { description: 'Match or user not found' },
     409: { description: 'Already submitted' },
   },
@@ -195,6 +197,25 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
   }
 
   const audioUrl = publicUrl(body.key);
+
+  // Anti-silence check: reject obviously empty/silent uploads so they
+  // can't be used to satisfy the submit phase without an honor penalty.
+  // Skipped in the test env (existing e2e tests upload synthesised
+  // silent WAVs via a stub upload-url path).
+  if (process.env.NODE_ENV !== 'test') {
+    const { rmsLevelDbFs, isSilent } = await import('../audio/rms.js');
+    const rms = await rmsLevelDbFs(audioUrl).catch(() => 0);
+    if (isSilent(rms)) {
+      return c.json(
+        {
+          error: 'low_quality',
+          message: 'That upload is silent or near-silent. Submit something audible.',
+        },
+        400,
+      );
+    }
+  }
+
   // Auto-generate a title when the producer leaves it blank so the feed
   // never shows "Untitled". Producers can rename later from their profile.
   const title = body.title && body.title.trim().length > 0 ? body.title.trim() : randomSongTitle();

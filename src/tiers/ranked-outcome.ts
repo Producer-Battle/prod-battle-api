@@ -57,7 +57,10 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
     .innerJoin(users, eq(users.id, matchPlayers.userId))
     .innerJoin(
       submissions,
-      and(eq(submissions.matchId, matchPlayers.matchId), eq(submissions.userId, matchPlayers.userId)),
+      and(
+        eq(submissions.matchId, matchPlayers.matchId),
+        eq(submissions.userId, matchPlayers.userId),
+      ),
     )
     .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.isSpectator, false)));
 

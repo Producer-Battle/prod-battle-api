@@ -10,8 +10,13 @@
 // - `requireRole(...roles)` returns 403 when the user's role isn't in the
 //   allowed set - layered on top of requireAuth.
 
+import { eq, sql } from 'drizzle-orm';
 import { createMiddleware } from 'hono/factory';
 import { auth } from '../auth/config.js';
+import { db } from '../db/client.js';
+import { users } from '../db/schema.js';
+
+const DELETE_GRACE_MS = 14 * 86400 * 1000;
 
 // Shape exposed to handlers. Kept minimal on purpose; if a handler needs a
 // field we haven't surfaced here, add it explicitly.
@@ -57,7 +62,29 @@ export function attachSession() {
         // Non-active users (archived, deleted) can't act even if their
         // session cookie survived - treat as anonymous. Admin soft-delete
         // already revokes sessions, this is defence in depth.
-        const status = (u.status as AuthUser['status']) ?? 'active';
+        let status = (u.status as AuthUser['status']) ?? 'active';
+
+        // Restore-on-login during the 14-day delete grace: a user who
+        // scheduled deletion via DELETE /me has status='archived' and
+        // deletedAt set. Signing in inside that window flips them back
+        // to active (and clears deletedAt) so the account isn't lost.
+        if (status === 'archived') {
+          const [row] = await db()
+            .select({ deletedAt: users.deletedAt })
+            .from(users)
+            .where(eq(users.id, u.id))
+            .limit(1);
+          const deletedAt = row?.deletedAt ?? null;
+          if (deletedAt && Date.now() - deletedAt.getTime() < DELETE_GRACE_MS) {
+            await db()
+              .update(users)
+              .set({ status: 'active', deletedAt: null, updatedAt: sql`now()` })
+              .where(eq(users.id, u.id));
+            status = 'active';
+            console.log(`[session] restored ${u.id} from delete grace`);
+          }
+        }
+
         if (status === 'active') {
           c.set('user', {
             id: u.id,

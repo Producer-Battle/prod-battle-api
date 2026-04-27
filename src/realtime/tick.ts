@@ -366,11 +366,163 @@ export async function staleMatchSweep(): Promise<void> {
       }
     }
   }
+
+  // Rule 7: hard-delete users whose 14-day delete grace has expired.
+  // Anonymise the handle first so opponent match histories keep a stable
+  // pointer (FK is ON DELETE SET NULL on most opponent-facing columns).
+  // The cascade clears submissions, match_players, achievements, etc.
+  const expiredDeletes = await d.execute<{ id: string; handle: string }>(
+    sql`SELECT id, handle FROM users
+         WHERE status = 'archived'
+           AND deleted_at IS NOT NULL
+           AND deleted_at < now() - interval '14 days'
+         LIMIT 50`,
+  );
+  for (const row of expiredDeletes as Array<{ id: string; handle: string }>) {
+    // Random 8-char sentinel handle so the unique index doesn't collide
+    // when the same user re-signs up with their old handle.
+    const sentinel = `deleted-${Math.random().toString(36).slice(2, 10)}`;
+    await d.execute(
+      sql`UPDATE users SET handle = ${sentinel}, email = ${sentinel} || '@deleted.local', status = 'deleted' WHERE id = ${row.id}`,
+    );
+    await d.execute(sql`DELETE FROM users WHERE id = ${row.id}`);
+    console.log(`[sweep] hard-deleted user ${row.id} (was @${row.handle})`);
+  }
 }
 
 // Throttle the grace scan to once per 30s. The 1s tick is overkill for
 // abandon detection and one slow scan starves the rest of the loop.
 let lastGraceAt = 0;
+
+// Daily / weekly champion auto-award. Champions are the top-voted
+// submitter on the trailing UTC day / week. Computed via a single
+// scoring SQL pass and idempotently inserted into achievements.
+let lastChampionScanAt = 0;
+
+async function championScan(): Promise<void> {
+  const now = Date.now();
+  // Run every 5 min. Awards are gated by ON CONFLICT DO NOTHING so a
+  // re-run is harmless. Intentionally not a per-day cron because we
+  // don't want the worker dependent on system cron schedulers.
+  if (now - lastChampionScanAt < 300_000) return;
+  lastChampionScanAt = now;
+
+  const d = db();
+
+  // Daily Champion: top-scoring submission for any 'daily' match whose
+  // results phase is in the trailing 30 days. We look back wider than
+  // a day to also award champions for daily matches that were voted
+  // on later (daily voting stays open indefinitely).
+  const dailyTops = await d.execute<{ user_id: string; daily_date: string }>(
+    sql`SELECT DISTINCT ON (m.daily_date) s.user_id, m.daily_date::text
+          FROM submissions s
+          JOIN matches m ON m.id = s.match_id
+         WHERE m.mode = 'daily'
+           AND m.daily_date IS NOT NULL
+           AND m.daily_date >= (now() - interval '30 days')::date
+         ORDER BY m.daily_date DESC, s.score DESC`,
+  );
+  const dailyArr = dailyTops as Array<{ user_id: string; daily_date: string }>;
+  for (const row of dailyArr) {
+    await d.execute(
+      sql`INSERT INTO achievements (user_id, achievement_key) VALUES (${row.user_id}, 'daily_champion') ON CONFLICT DO NOTHING`,
+    );
+  }
+
+  // Weekly Pick: highest-scored submission of the trailing 7 days
+  // across ALL match modes. One winner per ISO week.
+  const weeklyTop = await d.execute<{ user_id: string }>(
+    sql`SELECT s.user_id
+          FROM submissions s
+          JOIN matches m ON m.id = s.match_id
+         WHERE m.ended_at >= now() - interval '7 days'
+           AND m.ended_at IS NOT NULL
+         ORDER BY s.score DESC
+         LIMIT 1`,
+  );
+  const weekly = weeklyTop as Array<{ user_id: string }>;
+  if (weekly.length > 0 && weekly[0]) {
+    await d.execute(
+      sql`INSERT INTO achievements (user_id, achievement_key) VALUES (${weekly[0].user_id}, 'weekly_pick') ON CONFLICT DO NOTHING`,
+    );
+  }
+}
+
+// Soft-reset season rollover. When the active season changes, copy each
+// player's last-season rating into the new season at softResetPercent of
+// the old value, floored at the previous tier's entry minus one
+// sub-division. Idempotent via existence check on the new season's row.
+let lastSoftResetAt = 0;
+
+async function seasonSoftResetScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastSoftResetAt < 600_000) return; // every 10 minutes
+  lastSoftResetAt = now;
+
+  const d = db();
+  const { activeSeason, getCategory } = await import('../game-rules/loader.js');
+  const tierRules = await getCategory('tiers');
+  const current = await activeSeason().catch(() => null);
+  if (!current) return;
+
+  // For each user with a rankings row in any season EXCEPT the current
+  // active one, copy them into the active season at the soft-reset value
+  // - but only if they don't already have an active-season row (else
+  // we'd overwrite their in-progress rating).
+  const carryovers = await d.execute<{
+    user_id: string;
+    genre_id: string;
+    last_rating: string;
+  }>(
+    sql`WITH latest AS (
+          SELECT DISTINCT ON (r.user_id, r.genre_id)
+                 r.user_id, r.genre_id, r.glicko_rating::text AS last_rating, s.ends_at
+            FROM rankings r
+            JOIN seasons s ON s.id = r.season_id
+           WHERE r.season_id != ${current.id}
+             AND s.ends_at < now()
+           ORDER BY r.user_id, r.genre_id, s.ends_at DESC
+        )
+        SELECT user_id, genre_id, last_rating FROM latest
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM rankings r2
+                  WHERE r2.user_id = latest.user_id
+                    AND r2.genre_id = latest.genre_id
+                    AND r2.season_id = ${current.id}
+               )
+         LIMIT 200`,
+  );
+  const arr = carryovers as Array<{ user_id: string; genre_id: string; last_rating: string }>;
+  if (arr.length === 0) return;
+
+  for (const row of arr) {
+    const oldRating = Number(row.last_rating);
+    const reset = Math.round(oldRating * tierRules.softResetPercent);
+    // Floor: find the boundary the old rating sat in, then drop to the
+    // PREVIOUS tier's entry (so a Master player resets to high
+    // Diamond, not bronze).
+    let floor = 0;
+    const oldBoundary = tierRules.boundaries.find(
+      (b) => oldRating >= b.min && (b.max === null || oldRating < b.max),
+    );
+    if (oldBoundary) {
+      const oldIdx = tierRules.boundaries.indexOf(oldBoundary);
+      // softResetFloorOffset is typically -1 = "drop one tier minimum"
+      const targetIdx = Math.max(0, oldIdx + tierRules.softResetFloorOffset);
+      const targetBoundary = tierRules.boundaries[targetIdx];
+      floor = targetBoundary?.min ?? 0;
+    }
+    const finalRating = Math.max(reset, floor);
+    await d.execute(
+      sql`INSERT INTO rankings (user_id, genre_id, season_id, glicko_rating)
+            VALUES (${row.user_id}, ${row.genre_id}, ${current.id}, ${String(finalRating)})
+          ON CONFLICT DO NOTHING`,
+    );
+    console.log(
+      `[soft-reset] user=${row.user_id} genre=${row.genre_id} ${oldRating} -> ${finalRating}`,
+    );
+  }
+}
 
 /**
  * Scan active matches for players whose Redis presence key has expired.
@@ -435,6 +587,10 @@ export function startTickLoop(): () => void {
       );
       staleMatchSweep().catch((err: Error) => console.error('[sweep] error:', err.message));
       graceCheck().catch((err: Error) => console.error('[grace] error:', err.message));
+      championScan().catch((err: Error) => console.error('[champion] error:', err.message));
+      seasonSoftResetScan().catch((err: Error) =>
+        console.error('[soft-reset] error:', err.message),
+      );
     }, 1000);
   });
 
