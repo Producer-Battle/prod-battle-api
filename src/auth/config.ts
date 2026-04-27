@@ -57,6 +57,44 @@ export const auth = betterAuth({
     requireEmailVerification: true,
     minPasswordLength: 8,
     maxPasswordLength: 128,
+    // Anti-enumeration: with requireEmailVerification=true better-auth
+    // returns a fake "synthetic user" instead of an error when an email
+    // is already registered (so attackers can't probe whether an email
+    // exists). The honest user is left staring at a "check your email"
+    // screen with no email coming. This hook lets us send THAT user a
+    // real "you already have an account" email so their inbox gets
+    // something actionable, without leaking which emails exist.
+    onExistingUserSignUp: async ({ user }) => {
+      try {
+        const candidates = (env.WEB_ORIGIN ?? 'http://localhost:5173')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const webOrigin =
+          candidates.find((c) => c.startsWith('https://') && !c.includes('*')) ??
+          candidates[0] ??
+          'http://localhost:5173';
+        const signInUrl = `${webOrigin}/auth/sign-in`;
+        const nodemailer = await import('nodemailer');
+        const transport = nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port: Number(process.env.SMTP_PORT ?? 1025),
+          secure: false,
+          auth: process.env.SMTP_USER
+            ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+            : undefined,
+        });
+        await transport.sendMail({
+          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
+          to: user.email,
+          subject: 'You already have a Producer Battle account',
+          text: `Someone (probably you) tried to sign up with this email. You already have an account - sign in here: ${signInUrl}`,
+          html: `<p>Someone (probably you) tried to sign up with this email.</p><p>You already have an account: <a href="${signInUrl}">sign in</a>.</p>`,
+        });
+      } catch (err) {
+        console.warn('[auth] onExistingUserSignUp mail failed:', (err as Error).message);
+      }
+    },
   },
 
   emailVerification: {
