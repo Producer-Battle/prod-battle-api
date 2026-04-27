@@ -83,19 +83,27 @@ export const auth = betterAuth({
           // Port 465 = SMTPS (TLS-on-connect). Anything else uses plain
           // STARTTLS (587) or unencrypted (1025 dev mailpit).
           secure: smtpPort === 465,
+          connectionTimeout: 5000,
+          greetingTimeout: 5000,
+          socketTimeout: 5000,
           auth: process.env.SMTP_USER
             ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
             : undefined,
         });
-        await transport.sendMail({
-          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
-          to: user.email,
-          subject: 'You already have a Producer Battle account',
-          text: `Someone (probably you) tried to sign up with this email. You already have an account - sign in here: ${signInUrl}`,
-          html: `<p>Someone (probably you) tried to sign up with this email.</p><p>You already have an account: <a href="${signInUrl}">sign in</a>.</p>`,
-        });
+        // Fire-and-forget: signup must not hang on a slow SMTP path.
+        void transport
+          .sendMail({
+            from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
+            to: user.email,
+            subject: 'You already have a Producer Battle account',
+            text: `Someone (probably you) tried to sign up with this email. You already have an account - sign in here: ${signInUrl}`,
+            html: `<p>Someone (probably you) tried to sign up with this email.</p><p>You already have an account: <a href="${signInUrl}">sign in</a>.</p>`,
+          })
+          .catch((err: Error) => {
+            console.warn('[auth] onExistingUserSignUp mail failed:', err.message);
+          });
       } catch (err) {
-        console.warn('[auth] onExistingUserSignUp mail failed:', (err as Error).message);
+        console.warn('[auth] onExistingUserSignUp setup failed:', (err as Error).message);
       }
     },
   },
@@ -121,7 +129,10 @@ export const auth = betterAuth({
       const finalUrl = verifyUrl.toString();
 
       // Use nodemailer via SMTP. The compose stack runs mailpit on :1025
-      // in dev; prod uses Mailu via SMTPS on port 465.
+      // in dev; prod uses Mailu via SMTPS on port 465. Tight connection
+      // timeouts so signup never hangs on a slow / blocked SMTP path -
+      // we'd rather the user see "check your email" and the mail be
+      // late or lost than the request never return.
       const nodemailer = await import('nodemailer');
       const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
       const transport = nodemailer.createTransport({
@@ -129,17 +140,26 @@ export const auth = betterAuth({
         port: smtpPort,
         // 465 = SMTPS (TLS-on-connect). Other ports use plain or STARTTLS.
         secure: smtpPort === 465,
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 5000,
         auth: process.env.SMTP_USER
           ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
           : undefined,
       });
-      await transport.sendMail({
-        from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
-        to: user.email,
-        subject: 'Confirm your Producer Battle account',
-        text: `Welcome to Producer Battle. Confirm your email: ${finalUrl}`,
-        html: `<p>Welcome to Producer Battle.</p><p><a href="${finalUrl}">Confirm your email</a></p>`,
-      });
+      // Fire-and-forget: better-auth's contract is async but it doesn't
+      // care about the result; surface failures as a log instead.
+      void transport
+        .sendMail({
+          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
+          to: user.email,
+          subject: 'Confirm your Producer Battle account',
+          text: `Welcome to Producer Battle. Confirm your email: ${finalUrl}`,
+          html: `<p>Welcome to Producer Battle.</p><p><a href="${finalUrl}">Confirm your email</a></p>`,
+        })
+        .catch((err: Error) => {
+          console.warn('[auth] verifyEmail mail failed:', err.message);
+        });
     },
     sendOnSignUp: true,
     expiresIn: 60 * 60 * 24, // 24h verification window
