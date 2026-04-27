@@ -16,6 +16,7 @@ import { leaderboardRoutes } from './leaderboard.js';
 import { matchesRoutes } from './matches.js';
 import { meRoutes } from './me.js';
 import { phasesRoutes } from './phases.js';
+import { reportsRoutes } from './reports.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
 import { submissionsRoutes } from './submissions.js';
@@ -43,4 +44,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', meRoutes);
   app.route('/', billingRoutes);
   app.route('/', achievementsRoutes);
+  app.route('/', reportsRoutes);
 }

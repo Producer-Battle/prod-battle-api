@@ -746,3 +746,51 @@ meRoutes.openapi(getUserRoute, async (c) => {
     recentSubmissions,
   });
 });
+
+// ─── DELETE /me ─────────────────────────────────────────────────────────────
+//
+// Self-serve account deletion with a 14-day grace window. Sets status=
+// 'archived' and deletedAt=now so the account stops appearing in public
+// lists and the user can't sign in - but their match history still
+// references the user row (FK preserved). Logging in during the window
+// restores by clearing deletedAt + flipping status back to active. After
+// 14 days, a sweep cron hard-deletes the row (cascade clears submissions,
+// match_players, etc).
+
+const DeleteMeResponse = z
+  .object({
+    status: z.literal('scheduled_for_deletion'),
+    graceEndsAt: z.string().datetime(),
+  })
+  .openapi('DeleteMeResponse');
+
+const deleteMeRoute = createRoute({
+  method: 'delete',
+  path: '/me',
+  tags: ['profile'],
+  summary: 'Schedule own-account deletion (14-day grace)',
+  middleware: [requireAuth()] as const,
+  responses: {
+    200: {
+      description: 'Scheduled',
+      content: { 'application/json': { schema: DeleteMeResponse } },
+    },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(deleteMeRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+
+  const now = new Date();
+  await db().update(users).set({ status: 'archived', deletedAt: now }).where(eq(users.id, user.id));
+
+  // 14 days from now, returned for the UI to show "deletes on Mar 13".
+  const graceEndsAt = new Date(now.getTime() + 14 * 86400 * 1000);
+
+  return c.json(
+    { status: 'scheduled_for_deletion' as const, graceEndsAt: graceEndsAt.toISOString() },
+    200,
+  );
+});

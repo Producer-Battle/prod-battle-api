@@ -93,6 +93,10 @@ export const users = pgTable(
     // tournament / private hosting at low values - see middleware/honor.ts.
     // Penalty / regen / gate values are configurable via game_rules.
     honor: integer().notNull().default(100),
+    // Self-serve account deletion: when set, the account is in a 14-day
+    // grace period. Logging in during the grace clears it; the cron sweep
+    // hard-deletes after grace expires.
+    deletedAt: timestamp({ withTimezone: true }),
     // Number of remaining ranked matches before LP is shown to the user.
     // Decremented on each completed ranked match. While > 0, the UI hides
     // LP and tier and instead shows "calibrating (N matches left)".
@@ -699,6 +703,30 @@ export const packPlays = pgTable('pack_plays', {
     .notNull()
     .references(() => matches.id, { onDelete: 'cascade' }),
   playedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Reports - user-flagged content / behaviour. The admin moderation
+ * queue drains this table. status='open' until an admin acts; on
+ * resolution we record reviewedBy + reviewedAt + the action taken.
+ *
+ * subjectType ∈ {'submission', 'profile', 'pack', 'genre'} encodes
+ * which table subjectId references; the FK can't be polymorphic so
+ * we keep referential integrity in the application layer.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const reports = pgTable('reports', {
+  id: uuid().primaryKey().defaultRandom(),
+  subjectType: text().notNull(),
+  subjectId: uuid().notNull(),
+  reporterId: uuid().references(() => users.id, { onDelete: 'set null' }),
+  reason: text().notNull(),
+  notes: text(),
+  status: text().notNull().default('open'),
+  reviewedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+  reviewedAt: timestamp({ withTimezone: true }),
+  reviewerNote: text(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 
 /*
