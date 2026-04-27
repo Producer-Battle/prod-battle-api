@@ -141,6 +141,13 @@
       "when": 1777313805187,
       "tag": "0019_foamy_photon",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1777314705913,
+      "tag": "0020_friendly_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }

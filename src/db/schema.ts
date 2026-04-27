@@ -97,6 +97,29 @@ export const users = pgTable(
     // grace period. Logging in during the grace clears it; the cron sweep
     // hard-deletes after grace expires.
     deletedAt: timestamp({ withTimezone: true }),
+    // Creator-payout preferences: email + IBAN string. We don't keep
+    // bank details encrypted in-app - the admin payout dashboard
+    // exports these for manual SEPA transfer or future Mollie Connect.
+    // Empty string = creator has no preference set yet (revenue rolls
+    // forward in their creator_payouts row).
+    payoutEmail: text(),
+    payoutIban: text(),
+    // Lightweight browser fingerprint at signup - used as a cluster
+    // signal alongside session.ipAddress in the anti-smurf guard.
+    // Format: { canvasHash, screenDims, timezone, userAgent } - none
+    // are PII-sensitive on their own; together they're a soft signal.
+    deviceFingerprints: jsonb()
+      .$type<
+        Array<{
+          canvasHash: string;
+          screenDims: string;
+          timezone: string;
+          userAgent: string;
+          capturedAt: string;
+        }>
+      >()
+      .notNull()
+      .default([]),
     // Number of remaining ranked matches before LP is shown to the user.
     // Decremented on each completed ranked match. While > 0, the UI hides
     // LP and tier and instead shows "calibrating (N matches left)".
@@ -334,6 +357,12 @@ export const matches = pgTable(
     // other modes. The partial unique index below enforces at most one daily
     // match per UTC date.
     dailyDate: date({ mode: 'string' }),
+
+    // Tournament linkage. Set on mode='tournament' when the match is
+    // part of a scheduled bracket; null for ad-hoc tournament-mode
+    // matches. tournamentRound is 1-based.
+    tournamentId: uuid(),
+    tournamentRound: integer(),
 
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -704,6 +733,54 @@ export const packPlays = pgTable('pack_plays', {
     .references(() => matches.id, { onDelete: 'cascade' }),
   playedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
+
+/*
+ * Tournaments - scheduled bracket competitions. A tournament has a
+ * registration window and a start time; once registration closes, the
+ * tick worker pairs entrants into round-1 matches and links them via
+ * matches.tournamentId + matches.tournamentRound. As each round
+ * finishes, the worker pairs winners into the next round. Single-
+ * elimination only for now.
+ *
+ * Status:
+ *   'open'        registration accepting entrants
+ *   'starting'    registration closed, round 1 being created
+ *   'in_progress' rounds underway
+ *   'finished'    final round completed, winner crowned
+ *   'cancelled'   admin cancelled before starting
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const tournaments = pgTable('tournaments', {
+  id: uuid().primaryKey().defaultRandom(),
+  name: text().notNull(),
+  genreId: uuid()
+    .notNull()
+    .references(() => genres.id, { onDelete: 'restrict' }),
+  startsAt: timestamp({ withTimezone: true }).notNull(),
+  registrationClosesAt: timestamp({ withTimezone: true }).notNull(),
+  status: text().notNull().default('open'),
+  maxEntrants: integer().notNull().default(16),
+  // Even bracket size; capped at maxEntrants. Set when round 1 forms.
+  effectiveSize: integer(),
+  winnerId: uuid().references(() => users.id, { onDelete: 'set null' }),
+  createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+export const tournamentEntries = pgTable(
+  'tournament_entries',
+  {
+    tournamentId: uuid()
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    registeredAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    eliminatedAtRound: integer(),
+  },
+  (t) => [primaryKey({ columns: [t.tournamentId, t.userId] })],
+);
 
 /*
  * Creator payouts - one row per (creator, period) for the pack

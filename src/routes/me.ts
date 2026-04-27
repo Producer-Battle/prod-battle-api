@@ -88,6 +88,8 @@ const MeResponse = z
       packs: z.boolean(),
       achievements: z.boolean(),
     }),
+    payoutEmail: z.string().email().nullable(),
+    payoutIban: z.string().nullable(),
   })
   .openapi('MeResponse');
 
@@ -124,6 +126,8 @@ meRoutes.openapi(getMeRoute, async (c) => {
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       profileVisibility: users.profileVisibility,
+      payoutEmail: users.payoutEmail,
+      payoutIban: users.payoutIban,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -227,6 +231,8 @@ meRoutes.openapi(getMeRoute, async (c) => {
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
       },
+      payoutEmail: row.payoutEmail ?? null,
+      payoutIban: row.payoutIban ?? null,
     },
     200,
   );
@@ -251,6 +257,10 @@ const PatchMeBody = z
         achievements: z.boolean().optional(),
       })
       .optional(),
+    // Creator payout preferences. Set both for redundancy (admin
+    // settles via whichever channel works); empty string clears.
+    payoutEmail: z.string().email().nullable().optional(),
+    payoutIban: z.string().min(15).max(34).nullable().optional(),
   })
   .openapi('PatchMeBody');
 
@@ -284,7 +294,12 @@ meRoutes.openapi(patchMeRoute, async (c) => {
     handle?: string;
     avatarUrl?: string | null;
     profileVisibility?: Record<string, boolean>;
+    payoutEmail?: string | null;
+    payoutIban?: string | null;
   } = {};
+
+  if (body.payoutEmail !== undefined) updates.payoutEmail = body.payoutEmail;
+  if (body.payoutIban !== undefined) updates.payoutIban = body.payoutIban;
 
   if (body.profileVisibility !== undefined) {
     // Strip undefined values - jsonb column wants a clean object.
@@ -359,6 +374,8 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       profileVisibility: users.profileVisibility,
+      payoutEmail: users.payoutEmail,
+      payoutIban: users.payoutIban,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -408,6 +425,8 @@ meRoutes.openapi(patchMeRoute, async (c) => {
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
       },
+      payoutEmail: row.payoutEmail ?? null,
+      payoutIban: row.payoutIban ?? null,
     },
     200,
   );
@@ -898,6 +917,62 @@ meRoutes.openapi(getUserRoute, async (c) => {
     },
     recentSubmissions,
   });
+});
+
+// ─── POST /me/fingerprint ───────────────────────────────────────────────────
+//
+// Lightweight client-side browser fingerprint capture. The web client
+// sends { canvasHash, screenDims, timezone, userAgent } on signup and
+// occasionally afterwards. We append to users.device_fingerprints
+// (keep last 10 entries) and the cluster-guard reads from this list to
+// decide whether two accounts likely belong to the same person.
+//
+// None of the fields are PII-sensitive on their own; the array grows to
+// at most 10 entries per user (oldest dropped).
+
+const FingerprintBody = z.object({
+  canvasHash: z.string().max(128),
+  screenDims: z.string().max(32),
+  timezone: z.string().max(64),
+  userAgent: z.string().max(512),
+});
+
+const fingerprintRoute = createRoute({
+  method: 'post',
+  path: '/me/fingerprint',
+  tags: ['profile'],
+  summary: 'Record a browser fingerprint for the authenticated user',
+  middleware: [requireAuth()] as const,
+  request: { body: { content: { 'application/json': { schema: FingerprintBody } } } },
+  responses: {
+    204: { description: 'Captured (no body)' },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(fingerprintRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.body(null, 401);
+  const fp = c.req.valid('json');
+  const d = db();
+
+  const [u] = await d
+    .select({ list: users.deviceFingerprints })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .limit(1);
+  const list = u?.list ?? [];
+  const seen = list.find(
+    (e) =>
+      e.canvasHash === fp.canvasHash &&
+      e.screenDims === fp.screenDims &&
+      e.userAgent === fp.userAgent,
+  );
+  if (seen) return c.body(null, 204);
+
+  const next = [...list, { ...fp, capturedAt: new Date().toISOString() }].slice(-10);
+  await d.update(users).set({ deviceFingerprints: next }).where(eq(users.id, user.id));
+  return c.body(null, 204);
 });
 
 // ─── DELETE /me ─────────────────────────────────────────────────────────────

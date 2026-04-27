@@ -11,7 +11,7 @@
 
 import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { sessions } from '../db/schema.js';
+import { sessions, users } from '../db/schema.js';
 
 function ipv4ToCluster(ip: string | null | undefined): string | null {
   if (!ip) return null;
@@ -39,15 +39,31 @@ async function lastSeenCluster(userId: string): Promise<string | null> {
   return ipv4ToCluster(row?.ip ?? null);
 }
 
+async function fingerprintHashes(userId: string): Promise<Set<string>> {
+  const [u] = await db()
+    .select({ list: users.deviceFingerprints })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const set = new Set<string>();
+  for (const f of u?.list ?? []) {
+    // canvasHash + screenDims is the strongest signal - userAgent
+    // varies more across sessions of the same device.
+    set.add(`${f.canvasHash}|${f.screenDims}`);
+  }
+  return set;
+}
+
 /**
- * Check whether this user shares an IP cluster with any other seated
- * (non-spectator, not-yet-abandoned) player in the given match.
+ * Check whether this user shares a cluster (IP /24 OR canvas+screen
+ * fingerprint) with any other seated (non-spectator, not-yet-abandoned)
+ * player in the given match.
  *
  * Returns true if a cluster collision was found = "don't seat".
  */
 export async function isClusterMatch(matchId: string, userId: string): Promise<boolean> {
   const myCluster = await lastSeenCluster(userId);
-  if (!myCluster) return false;
+  const myFingerprints = await fingerprintHashes(userId);
 
   const rows = await db().execute<{ user_id: string; ip: string | null }>(
     sql`SELECT mp.user_id, (
@@ -64,8 +80,16 @@ export async function isClusterMatch(matchId: string, userId: string): Promise<b
            AND mp.abandoned = false`,
   );
   for (const row of rows as Array<{ user_id: string; ip: string | null }>) {
-    const otherCluster = ipv4ToCluster(row.ip);
-    if (otherCluster && otherCluster === myCluster) return true;
+    if (myCluster) {
+      const otherCluster = ipv4ToCluster(row.ip);
+      if (otherCluster && otherCluster === myCluster) return true;
+    }
+    if (myFingerprints.size > 0) {
+      const otherFp = await fingerprintHashes(row.user_id);
+      for (const fp of otherFp) {
+        if (myFingerprints.has(fp)) return true;
+      }
+    }
   }
   return false;
 }

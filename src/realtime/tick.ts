@@ -638,6 +638,96 @@ async function voteRingScan(): Promise<void> {
       `[vote-ring] flagged pair (${row.a}, ${row.b}) - ${row.n_pairs} mutual high-weight pairs`,
     );
   }
+
+  // ── Triad signal: 3-cycle voting (A→B→C→A) where each leg has high
+  // weight within the time window. Catches small rings the pair detector
+  // misses.
+  const triads = await d.execute<{
+    a: string;
+    b: string;
+    c: string;
+  }>(
+    sql`WITH high AS (
+          SELECT v.voter_id, s.user_id AS target_id, v.created_at
+            FROM votes v JOIN submissions s ON s.id = v.submission_id
+           WHERE v.weight >= 4 AND v.voter_id != s.user_id
+        )
+        SELECT DISTINCT ab.voter_id AS a, ab.target_id AS b, bc.target_id AS c
+          FROM high ab
+          JOIN high bc ON bc.voter_id = ab.target_id
+          JOIN high ca ON ca.voter_id = bc.target_id AND ca.target_id = ab.voter_id
+         WHERE ab.target_id != ab.voter_id
+           AND bc.target_id != ab.voter_id
+           AND bc.target_id != ab.target_id
+           AND ab.voter_id < ab.target_id
+           AND ab.voter_id < bc.target_id
+         LIMIT 50`,
+  );
+  for (const row of triads as Array<{ a: string; b: string; c: string }>) {
+    const note = `triad=${row.a},${row.b},${row.c}`;
+    const exists = await d.execute<{ id: string }>(
+      sql`SELECT id FROM reports
+           WHERE status = 'open' AND reason = 'vote_ring' AND notes = ${note}
+           LIMIT 1`,
+    );
+    if ((exists as Array<{ id: string }>).length > 0) continue;
+    await d.execute(
+      sql`INSERT INTO reports (subject_type, subject_id, reporter_id, reason, notes, status)
+            VALUES ('profile', ${row.a}, NULL, 'vote_ring', ${note}, 'open')`,
+    );
+    console.log(`[vote-ring] flagged triad (${row.a}, ${row.b}, ${row.c})`);
+  }
+
+  // ── Signup-IP cluster signal: 3+ accounts that share a /24 signup
+  // IP and have voted heavily for at least one shared subject. We look
+  // up signup IP via the earliest session per user.
+  const ipClusters = await d.execute<{
+    cluster: string;
+    user_ids: string[];
+    n: string;
+  }>(
+    sql`WITH first_sess AS (
+          SELECT s.user_id,
+                 (SELECT s2.ip_address FROM sessions s2
+                   WHERE s2.user_id = s.user_id
+                   ORDER BY s2.created_at ASC LIMIT 1) AS ip
+            FROM sessions s
+           GROUP BY s.user_id
+        ),
+        cluster_24 AS (
+          SELECT user_id,
+                 -- best-effort /24 string for ipv4
+                 regexp_replace(ip, '\\.\\d+$', '.0/24') AS cluster
+            FROM first_sess
+           WHERE ip ~ '^\\d+\\.\\d+\\.\\d+\\.\\d+$'
+        ),
+        with_votes AS (
+          SELECT c.cluster, array_agg(DISTINCT c.user_id) AS user_ids,
+                 COUNT(DISTINCT c.user_id) AS n
+            FROM cluster_24 c
+           WHERE EXISTS (
+             SELECT 1 FROM votes v WHERE v.voter_id = c.user_id AND v.weight >= 4
+           )
+           GROUP BY c.cluster
+        )
+        SELECT cluster, user_ids, n::text FROM with_votes WHERE n >= 3 LIMIT 30`,
+  );
+  for (const row of ipClusters as Array<{ cluster: string; user_ids: string[]; n: string }>) {
+    const note = `ip_cluster=${row.cluster}; users=${(row.user_ids ?? []).join(',')}`;
+    const exists = await d.execute<{ id: string }>(
+      sql`SELECT id FROM reports
+           WHERE status = 'open' AND reason = 'vote_ring' AND notes = ${note}
+           LIMIT 1`,
+    );
+    if ((exists as Array<{ id: string }>).length > 0) continue;
+    const targetUserId = (row.user_ids ?? [])[0];
+    if (!targetUserId) continue;
+    await d.execute(
+      sql`INSERT INTO reports (subject_type, subject_id, reporter_id, reason, notes, status)
+            VALUES ('profile', ${targetUserId}, NULL, 'vote_ring', ${note}, 'open')`,
+    );
+    console.log(`[vote-ring] flagged IP cluster ${row.cluster} (${row.n} accounts)`);
+  }
 }
 
 // Monthly creator payout snapshot. Once per UTC day we check whether
@@ -713,6 +803,212 @@ async function payoutMonthlyScan(): Promise<void> {
   );
 }
 
+// Tournament scheduling. Two responsibilities, both fire from the same
+// scan:
+//   1. Registration locks: tournaments with status='open' whose
+//      registration_closes_at has passed get flipped to 'starting' and
+//      have their effective_size set to the next-power-of-two <= entries.
+//      Round-1 matches are then created from the entrant list shuffled
+//      seed order (winners advance via the round-up logic below).
+//   2. Round advancement: in-progress tournaments check whether all
+//      matches in the current round have status='results'. If so, take
+//      the winners and pair them into the next round. When a round has
+//      a single match and it ends, set the tournament status='finished'
+//      and write winnerId.
+let lastTournamentScheduleScanAt = 0;
+
+async function tournamentScheduleScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastTournamentScheduleScanAt < 30_000) return; // every 30s
+  lastTournamentScheduleScanAt = now;
+
+  const d = db();
+
+  // ── Lock registration on tournaments whose window has closed ─────────
+  const opening = await d.execute<{ id: string }>(
+    sql`SELECT id FROM tournaments
+         WHERE status = 'open'
+           AND registration_closes_at < now()
+         LIMIT 10`,
+  );
+  for (const row of opening as Array<{ id: string }>) {
+    await openRound1(row.id).catch((err: Error) =>
+      console.error('[tournament-sched] openRound1 failed:', err.message),
+    );
+  }
+
+  // ── Advance in-progress tournaments to next round (or finish) ──────
+  const advancing = await d.execute<{ id: string }>(
+    sql`SELECT t.id FROM tournaments t
+         WHERE t.status IN ('starting', 'in_progress')
+           AND NOT EXISTS (
+             SELECT 1 FROM matches m
+              WHERE m.tournament_id = t.id
+                AND m.status NOT IN ('results', 'cancelled')
+           )
+           AND EXISTS (SELECT 1 FROM matches m2 WHERE m2.tournament_id = t.id)
+         LIMIT 10`,
+  );
+  for (const row of advancing as Array<{ id: string }>) {
+    await advanceRound(row.id).catch((err: Error) =>
+      console.error('[tournament-sched] advanceRound failed:', err.message),
+    );
+  }
+}
+
+async function openRound1(tournamentId: string): Promise<void> {
+  const d = db();
+  const [t] = (await d.execute<{
+    id: string;
+    genre_id: string;
+    max_entrants: number;
+  }>(
+    sql`SELECT id, genre_id, max_entrants FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
+  )) as Array<{ id: string; genre_id: string; max_entrants: number }>;
+  if (!t) return;
+
+  const entrants = await d.execute<{ user_id: string }>(
+    sql`SELECT user_id FROM tournament_entries WHERE tournament_id = ${tournamentId} ORDER BY registered_at ASC`,
+  );
+  const arr = entrants as Array<{ user_id: string }>;
+  if (arr.length < 2) {
+    await d.execute(sql`UPDATE tournaments SET status = 'cancelled' WHERE id = ${tournamentId}`);
+    console.log(`[tournament-sched] ${tournamentId} cancelled - too few entrants`);
+    return;
+  }
+
+  // Round to nearest power of 2 ≤ entrants.length, capped at max_entrants.
+  const cap = Math.min(arr.length, t.max_entrants);
+  let size = 1;
+  while (size * 2 <= cap) size *= 2;
+
+  // Shuffle for seeding.
+  const seeded = arr.slice(0, size).sort(() => Math.random() - 0.5);
+
+  // Generate `size/2` round-1 matches with primary_genre_id = tournament.genre_id.
+  // submit_seconds left null so they default per-mode.
+  for (let i = 0; i < seeded.length; i += 2) {
+    const a = seeded[i];
+    const b = seeded[i + 1];
+    if (!a || !b) continue;
+    const roomCode = generateRoomCode();
+    const [m] = (await d.execute<{ id: string }>(
+      sql`INSERT INTO matches
+            (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode, tournament_id, tournament_round)
+            VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated', ${tournamentId}, 1)
+            RETURNING id`,
+    )) as Array<{ id: string }>;
+    if (!m) continue;
+    await d.execute(
+      sql`INSERT INTO match_teams (match_id, seat, name) VALUES (${m.id}, 0, 'A'), (${m.id}, 1, 'B')`,
+    );
+    await d.execute(
+      sql`INSERT INTO match_players (match_id, user_id, is_spectator, ready) VALUES
+            (${m.id}, ${a.user_id}, false, false),
+            (${m.id}, ${b.user_id}, false, false)`,
+    );
+    await d.execute(
+      sql`INSERT INTO battle_phases (match_id, current_phase, transitions_at)
+            VALUES (${m.id}, 'lobby'::match_phase, now() + interval '24 hours')`,
+    );
+  }
+
+  await d.execute(
+    sql`UPDATE tournaments SET status = 'in_progress', effective_size = ${size} WHERE id = ${tournamentId}`,
+  );
+  console.log(`[tournament-sched] ${tournamentId} opened round 1 with ${size / 2} matches`);
+}
+
+async function advanceRound(tournamentId: string): Promise<void> {
+  const d = db();
+  // Highest round so far for this tournament.
+  const lastRoundRow = await d.execute<{ r: number; n: string }>(
+    sql`SELECT MAX(tournament_round)::int AS r,
+               COUNT(*)::text AS n
+          FROM matches
+         WHERE tournament_id = ${tournamentId}
+           AND tournament_round IS NOT NULL`,
+  );
+  const lastRound = (lastRoundRow as Array<{ r: number; n: string }>)[0];
+  if (!lastRound || lastRound.r === null) return;
+  const currentRound = lastRound.r;
+
+  // Find this round's winners.
+  const winners = await d.execute<{ user_id: string }>(
+    sql`SELECT s.user_id
+          FROM submissions s
+          JOIN matches m ON m.id = s.match_id
+         WHERE m.tournament_id = ${tournamentId}
+           AND m.tournament_round = ${currentRound}
+           AND s.final_rank = 1
+         ORDER BY m.created_at ASC`,
+  );
+  const winnerArr = winners as Array<{ user_id: string }>;
+
+  if (winnerArr.length === 0) {
+    // No clear winners (e.g. all rounds cancelled). Mark finished, no champ.
+    await d.execute(sql`UPDATE tournaments SET status = 'finished' WHERE id = ${tournamentId}`);
+    return;
+  }
+
+  if (winnerArr.length === 1) {
+    // Champion!
+    const winnerId = winnerArr[0]?.user_id;
+    if (winnerId) {
+      await d.execute(
+        sql`UPDATE tournaments SET status = 'finished', winner_id = ${winnerId} WHERE id = ${tournamentId}`,
+      );
+      // Award the tournament_winner achievement.
+      await d.execute(
+        sql`INSERT INTO achievements (user_id, achievement_key) VALUES (${winnerId}, 'tournament_winner') ON CONFLICT DO NOTHING`,
+      );
+      console.log(`[tournament-sched] ${tournamentId} won by ${winnerId}`);
+    }
+    return;
+  }
+
+  // Pair winners into next-round matches.
+  const nextRound = currentRound + 1;
+  const [t] = (await d.execute<{ genre_id: string }>(
+    sql`SELECT genre_id FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
+  )) as Array<{ genre_id: string }>;
+  if (!t) return;
+
+  for (let i = 0; i < winnerArr.length; i += 2) {
+    const a = winnerArr[i];
+    const b = winnerArr[i + 1];
+    if (!a || !b) continue;
+    const roomCode = generateRoomCode();
+    const [m] = (await d.execute<{ id: string }>(
+      sql`INSERT INTO matches
+            (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode, tournament_id, tournament_round)
+            VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated', ${tournamentId}, ${nextRound})
+            RETURNING id`,
+    )) as Array<{ id: string }>;
+    if (!m) continue;
+    await d.execute(
+      sql`INSERT INTO match_teams (match_id, seat, name) VALUES (${m.id}, 0, 'A'), (${m.id}, 1, 'B')`,
+    );
+    await d.execute(
+      sql`INSERT INTO match_players (match_id, user_id, is_spectator, ready) VALUES
+            (${m.id}, ${a.user_id}, false, false),
+            (${m.id}, ${b.user_id}, false, false)`,
+    );
+    await d.execute(
+      sql`INSERT INTO battle_phases (match_id, current_phase, transitions_at)
+            VALUES (${m.id}, 'lobby'::match_phase, now() + interval '24 hours')`,
+    );
+  }
+  console.log(`[tournament-sched] ${tournamentId} advanced to round ${nextRound}`);
+}
+
+function generateRoomCode(): string {
+  const chars = 'ABCDEFGHIJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -735,6 +1031,9 @@ export function startTickLoop(): () => void {
       );
       voteRingScan().catch((err: Error) => console.error('[vote-ring] error:', err.message));
       payoutMonthlyScan().catch((err: Error) => console.error('[payout] error:', err.message));
+      tournamentScheduleScan().catch((err: Error) =>
+        console.error('[tournament-sched] error:', err.message),
+      );
     }, 1000);
   });
 

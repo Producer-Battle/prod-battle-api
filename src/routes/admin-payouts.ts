@@ -313,3 +313,93 @@ adminPayoutsRoutes.openapi(patchSnapshotRoute, async (c) => {
 // `desc` import is consumed by drizzle's query builder above; keep it
 // in scope so future helpers (e.g., paginated snapshots) can use it.
 void desc;
+
+// ─── GET /admin/payouts/pending ─────────────────────────────────────────────
+//
+// Settle-ready list: pending creator_payouts joined with the creator's
+// payoutEmail/payoutIban so an operator can run a SEPA bank transfer
+// (or future Mollie Connect call) and then PATCH the row to status='paid'.
+// Excludes rows with no payout preference set - those still appear in
+// the snapshots view but can't be settled until the creator fills in
+// their bank details.
+
+const PendingRow = z.object({
+  id: z.string().uuid(),
+  creatorId: z.string().uuid(),
+  creatorHandle: z.string(),
+  payoutEmail: z.string().nullable(),
+  payoutIban: z.string().nullable(),
+  amountCents: z.number().int(),
+  periodStart: z.string().datetime(),
+  periodEnd: z.string().datetime(),
+});
+
+const pendingRoute = createRoute({
+  method: 'get',
+  path: '/admin/payouts/pending',
+  tags: ['admin', 'payouts'],
+  summary: 'Settle-ready creator payouts (status=pending, payout details set)',
+  responses: {
+    200: {
+      description: 'Pending settle queue',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(PendingRow) }) },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Not an admin', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminPayoutsRoutes.openapi(pendingRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const rows = await db().execute<{
+    id: string;
+    creator_id: string;
+    handle: string;
+    payout_email: string | null;
+    payout_iban: string | null;
+    amount_cents: number;
+    period_start: Date | string;
+    period_end: Date | string;
+  }>(
+    sql`SELECT cp.id, cp.creator_id, u.handle,
+               u.payout_email, u.payout_iban,
+               cp.amount_cents, cp.period_start, cp.period_end
+          FROM creator_payouts cp
+          JOIN users u ON u.id = cp.creator_id
+         WHERE cp.status = 'pending'
+           AND (u.payout_email IS NOT NULL OR u.payout_iban IS NOT NULL)
+         ORDER BY cp.period_start ASC, cp.amount_cents DESC`,
+  );
+  const arr = rows as Array<{
+    id: string;
+    creator_id: string;
+    handle: string;
+    payout_email: string | null;
+    payout_iban: string | null;
+    amount_cents: number;
+    period_start: Date | string;
+    period_end: Date | string;
+  }>;
+  return c.json(
+    {
+      items: arr.map((r) => ({
+        id: r.id,
+        creatorId: r.creator_id,
+        creatorHandle: r.handle,
+        payoutEmail: r.payout_email,
+        payoutIban: r.payout_iban,
+        amountCents: Number(r.amount_cents),
+        periodStart: new Date(r.period_start).toISOString(),
+        periodEnd: new Date(r.period_end).toISOString(),
+      })),
+    },
+    200,
+  );
+});
