@@ -53,14 +53,26 @@ const GenreItem = z
   })
   .openapi('Genre');
 
+import slugifyLib from 'slugify';
+
+// Derive a kebab-case slug from a free-text name. The slugify package
+// handles diacritics, transliteration, and arbitrary unicode (including
+// emoji - they're stripped). Lowercased, dashes only, trimmed to 32
+// chars. e.g. "Phonk / Drift! 🔥" -> "phonk-drift".
+function slugify(name: string): string {
+  return slugifyLib(name, {
+    lower: true,
+    strict: true, // strip any character not in [a-z0-9-]
+    trim: true,
+    locale: 'en',
+  }).slice(0, 32);
+}
+
 const CreateGenreBody = z
   .object({
-    // Slug: lowercase, digits, dashes. 3–32 chars. Unique across the table.
-    slug: z
-      .string()
-      .min(3)
-      .max(32)
-      .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'lowercase letters, digits, and single dashes'),
+    // Slug is auto-derived from `name` at the route handler. Accepted but
+    // ignored if the client sends one - we re-slugify name for consistency.
+    slug: z.string().optional(),
     name: z.string().min(3).max(64),
     // At least 3 stems so a sample pack is meaningful, max 12 to keep the
     // match-generation pick-per-type step fast.
@@ -177,6 +189,12 @@ const createRouteDef = createRoute({
       description: 'Created',
       content: { 'application/json': { schema: GenreItem } },
     },
+    400: {
+      description: 'Invalid name (slugifies to empty/too-short)',
+      content: {
+        'application/json': { schema: z.object({ error: z.string(), message: z.string() }) },
+      },
+    },
     401: {
       description: 'Unauthenticated',
       content: {
@@ -199,22 +217,39 @@ genresRoutes.openapi(createRouteDef, async (c) => {
   const body = c.req.valid('json');
   const d = db();
 
+  // Slug is auto-derived from name. Reject if the slugified result is too
+  // short (e.g. name was all punctuation) - the client should show a
+  // helpful "name produces no usable slug" hint there.
+  const slug = slugify(body.name);
+  if (slug.length < 3) {
+    return c.json(
+      {
+        error: 'invalid_name',
+        message: 'Name must contain at least 3 letters or digits.',
+      },
+      400,
+    );
+  }
+
   // Uniqueness check (the DB's unique index enforces this too, but we want a
   // clean 409 body instead of a raw duplicate-key error).
   const existing = await d
     .select({ id: genres.id })
     .from(genres)
-    .where(eq(genres.slug, body.slug))
+    .where(eq(genres.slug, slug))
     .limit(1);
   if (existing.length > 0) {
-    return c.json({ error: 'slug_taken', message: 'That slug already exists.' }, 409);
+    return c.json(
+      { error: 'slug_taken', message: `Slug "${slug}" already exists. Try a different name.` },
+      409,
+    );
   }
 
   const votingEndsAt = new Date(Date.now() + VOTING_WINDOW_DAYS * 24 * 3600 * 1000);
   const [row] = await d
     .insert(genres)
     .values({
-      slug: body.slug,
+      slug,
       name: body.name,
       kind: 'user',
       status: 'proposed',

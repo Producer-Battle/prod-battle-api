@@ -444,10 +444,14 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
   } | null = null;
   if (sampleMode === 'generated') {
     try {
+      // Ranked must not let the caller pick a pack - it would let people
+      // farm their best stems. Quickplay is also server-picked. Pack
+      // picking is private-room only (and uploaded packs are owner-only).
+      const allowClientPick = body.mode === 'private';
       // If the caller passed an explicit samplePackId, honour it (after
       // ownership + genre-match checks); otherwise pick a random pool pack.
       let pack: typeof samplePacks.$inferSelect;
-      if (body.samplePackId) {
+      if (body.samplePackId && allowClientPick) {
         const [picked] = await d
           .select()
           .from(samplePacks)
@@ -483,7 +487,9 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
         }
         pack = picked;
       } else {
-        pack = await generateMatchPack(match.id, resolvedSlug);
+        pack = await generateMatchPack(match.id, resolvedSlug, {
+          userId: c.var.user?.id ?? null,
+        });
       }
       // Link the pack back to the match.
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
