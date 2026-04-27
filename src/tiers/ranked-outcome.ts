@@ -17,7 +17,7 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { matchPlayers, matches, rankings, users } from '../db/schema.js';
+import { matchPlayers, matches, rankings, submissions, users } from '../db/schema.js';
 import { activeSeason, getCategory } from '../game-rules/loader.js';
 import { tickCalibration } from './index.js';
 
@@ -45,17 +45,24 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
   const tierRules = await getCategory('tiers');
 
   // Gather seated players + their final rank + their current rating.
+  // tallyResults writes finalRank to submissions, not match_players, so
+  // we join through submissions to recover the rank per (match, user).
   const players = await d
     .select({
       userId: matchPlayers.userId,
-      finalRank: matchPlayers.finalRank,
+      finalRank: submissions.finalRank,
       calibrating: users.calibrationMatchesRemaining,
     })
     .from(matchPlayers)
     .innerJoin(users, eq(users.id, matchPlayers.userId))
+    .innerJoin(
+      submissions,
+      and(eq(submissions.matchId, matchPlayers.matchId), eq(submissions.userId, matchPlayers.userId)),
+    )
     .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.isSpectator, false)));
 
-  // Drop anyone with no final rank (abandoned without a submission, etc.).
+  // Drop anyone with no final rank (abandoned, didn't submit, vote tie
+  // edge case). Need ≥ 2 ranked players to produce any LP movement.
   const ranked = players.filter((p) => p.finalRank !== null);
   if (ranked.length < 2) return;
 

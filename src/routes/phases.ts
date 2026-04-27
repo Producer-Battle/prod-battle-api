@@ -146,23 +146,32 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   }
   if (!u) return c.json({ error: 'user not found' }, 404);
 
-  // Min-matches gate: a brand new account can't shape the vote tally
-  // until they've completed a few matches themselves. Stops fresh-account
-  // vote farms. Configurable via game_rules.voting.minMatchesBeforeVotesCount.
+  // Min-matches gate: blocks fresh-account vote farms from drive-by
+  // /vote audience clicks. Seated players in the current match are
+  // EXEMPT - they're casting peer votes inside their own match, which is
+  // the whole point of the mechanic. Configurable via
+  // game_rules.voting.minMatchesBeforeVotesCount.
   const votingRules = await getCategory('voting');
   if (votingRules.minMatchesBeforeVotesCount > 0) {
-    const [played] = await d
+    const [seated] = await d
       .select({ n: count() })
       .from(matchPlayers)
-      .where(and(eq(matchPlayers.userId, u.id), eq(matchPlayers.abandoned, false)));
-    if (Number(played?.n ?? 0) < votingRules.minMatchesBeforeVotesCount) {
-      return c.json(
-        {
-          error: 'too_new',
-          message: `Play at least ${votingRules.minMatchesBeforeVotesCount} matches before your votes count.`,
-        },
-        403,
-      );
+      .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)));
+    const isSeated = Number(seated?.n ?? 0) > 0;
+    if (!isSeated) {
+      const [played] = await d
+        .select({ n: count() })
+        .from(matchPlayers)
+        .where(and(eq(matchPlayers.userId, u.id), eq(matchPlayers.abandoned, false)));
+      if (Number(played?.n ?? 0) < votingRules.minMatchesBeforeVotesCount) {
+        return c.json(
+          {
+            error: 'too_new',
+            message: `Play at least ${votingRules.minMatchesBeforeVotesCount} matches before your votes count.`,
+          },
+          403,
+        );
+      }
     }
   }
 
@@ -174,14 +183,11 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     .where(eq(submissions.matchId, m.id));
   const subById = new Map(subs.map((s) => [s.id, s]));
 
-  // Self-vote check: if any vote targets the caller's own submission, reject
-  // the entire request with 403 rather than silently dropping it.
-  for (const v of body.votes) {
-    const s = subById.get(v.submissionId);
-    if (s && s.userId === u.id) {
-      return c.json({ error: 'self_vote', message: "You can't vote for your own track." }, 403);
-    }
-  }
+  // Self-vote silently filtered. The reveal phase is anonymous so a player
+  // can't tell which entry is theirs - rejecting the whole batch with 403
+  // would block them from voting at all if they happen to click their own.
+  // We just drop those votes and keep the rest.
+  const ownSubmissionIds = new Set(subs.filter((s) => s.userId === u.id).map((s) => s.id));
 
   // Apply honor + premium multiplier to the raw 1-5 score before storing.
   const isPremium = u.plan === 'paid';
@@ -192,6 +198,7 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   for (const v of body.votes) {
     const s = subById.get(v.submissionId);
     if (!s) continue; // bad id - ignore
+    if (ownSubmissionIds.has(v.submissionId)) continue; // silent drop
 
     // Upsert (match, voter, submission) with the weighted score.
     const weight = weightFor(v.score);

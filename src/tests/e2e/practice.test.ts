@@ -54,12 +54,16 @@ describe('mode: practice', () => {
     const [onlyItem] = items;
     if (!onlyItem) throw new Error('expected one reveal item');
 
-    // Self-vote must still be rejected in practice mode.
+    // Self-vote is silently filtered (we used to 403 the whole batch but
+    // the reveal phase is anonymous - users can't tell which entry is
+    // theirs, and a single misclick would block them from voting at all).
+    // Expect 200 with accepted=0.
     const selfVote = await postJson(app, `/rooms/${match.roomCode}/vote`, {
       user: solo,
       votes: [{ submissionId: onlyItem.submissionId, score: 5 }],
     });
-    expect(selfVote.status).toBe(403);
+    expect(selfVote.status).toBe(200);
+    expect((selfVote.json as { accepted: number }).accepted).toBe(0);
   });
 
   it('rejects practice creation with teamCount != 1', async () => {

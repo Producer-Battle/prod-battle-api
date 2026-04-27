@@ -119,9 +119,11 @@ async function seedRulesAndSeasons(): Promise<void> {
     {
       category: 'voting',
       payload: {
-        // Test seed sets the gate to 0 - existing e2e tests build fresh
-        // users per scenario and would never clear a 3-match warmup.
-        // Production migration 0017 keeps it at 3.
+        // Test seed sets the gate to 0 because the e2e suite simulates
+        // audience voters with fresh users (especially in daily.test.ts).
+        // The seated-player exemption is verified by browser E2E running
+        // against production-default rules (gate=3); production migration
+        // 0017 keeps it at 3.
         minMatchesBeforeVotesCount: 0,
         selfVoteAllowed: false,
         downvotesEnabled: false,
