@@ -82,6 +82,12 @@ const MeResponse = z
         losses: z.number().int(),
       }),
     ),
+    profileVisibility: z.object({
+      matchHistory: z.boolean(),
+      stats: z.boolean(),
+      packs: z.boolean(),
+      achievements: z.boolean(),
+    }),
   })
   .openapi('MeResponse');
 
@@ -117,6 +123,7 @@ meRoutes.openapi(getMeRoute, async (c) => {
       createdAt: users.createdAt,
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
+      profileVisibility: users.profileVisibility,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -214,6 +221,12 @@ meRoutes.openapi(getMeRoute, async (c) => {
       honor: row.honor,
       calibrationMatchesRemaining: row.calibrationMatchesRemaining,
       rankedTiers,
+      profileVisibility: {
+        matchHistory: row.profileVisibility?.matchHistory ?? true,
+        stats: row.profileVisibility?.stats ?? true,
+        packs: row.profileVisibility?.packs ?? true,
+        achievements: row.profileVisibility?.achievements ?? true,
+      },
     },
     200,
   );
@@ -229,6 +242,15 @@ const PatchMeBody = z
     avatarUrl: z.string().url('avatarUrl must be a valid URL').nullable().optional(),
     bio: z.string().max(500).nullable().optional(),
     socialLinks: z.record(z.string(), z.string().url()).nullable().optional(),
+    // Per-section profile visibility. Missing keys default to true.
+    profileVisibility: z
+      .object({
+        matchHistory: z.boolean().optional(),
+        stats: z.boolean().optional(),
+        packs: z.boolean().optional(),
+        achievements: z.boolean().optional(),
+      })
+      .optional(),
   })
   .openapi('PatchMeBody');
 
@@ -258,7 +280,20 @@ meRoutes.openapi(patchMeRoute, async (c) => {
   const body = c.req.valid('json');
   const d = db();
 
-  const updates: { handle?: string; avatarUrl?: string | null } = {};
+  const updates: {
+    handle?: string;
+    avatarUrl?: string | null;
+    profileVisibility?: Record<string, boolean>;
+  } = {};
+
+  if (body.profileVisibility !== undefined) {
+    // Strip undefined values - jsonb column wants a clean object.
+    const v: Record<string, boolean> = {};
+    for (const [k, val] of Object.entries(body.profileVisibility)) {
+      if (val !== undefined) v[k] = val;
+    }
+    updates.profileVisibility = v;
+  }
 
   if (body.handle !== undefined) {
     const normalised = body.handle.toLowerCase();
@@ -321,6 +356,9 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       status: users.status,
       avatarUrl: users.avatarUrl,
       createdAt: users.createdAt,
+      honor: users.honor,
+      calibrationMatchesRemaining: users.calibrationMatchesRemaining,
+      profileVisibility: users.profileVisibility,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -360,6 +398,15 @@ meRoutes.openapi(patchMeRoute, async (c) => {
         totalMatches: Number(stats?.total_matches ?? 0),
         totalSubmissions: Number(stats?.total_submissions ?? 0),
         bestRank: stats?.best_rank != null ? Number(stats.best_rank) : null,
+      },
+      honor: row.honor,
+      calibrationMatchesRemaining: row.calibrationMatchesRemaining,
+      rankedTiers: [] as Array<never>,
+      profileVisibility: {
+        matchHistory: row.profileVisibility?.matchHistory ?? true,
+        stats: row.profileVisibility?.stats ?? true,
+        packs: row.profileVisibility?.packs ?? true,
+        achievements: row.profileVisibility?.achievements ?? true,
       },
     },
     200,
@@ -661,6 +708,7 @@ const PublicTierRow = z.object({
 
 const PublicProfileResponse = z
   .object({
+    id: z.string().uuid(),
     handle: z.string(),
     avatarUrl: z.string().nullable(),
     role: z.enum(['producer', 'ar', 'admin']),
@@ -833,6 +881,7 @@ meRoutes.openapi(getUserRoute, async (c) => {
   );
 
   return c.json({
+    id: row.id,
     handle: row.handle,
     avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
     role: row.role,
