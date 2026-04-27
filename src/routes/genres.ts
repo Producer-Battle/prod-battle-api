@@ -7,7 +7,11 @@ import { requireProducerQuota } from '../middleware/rate-limit.js';
 export const genresRoutes = new OpenAPIHono();
 
 // Per-producer weekly genre-proposal quota on the create endpoint only.
-genresRoutes.use('/genres', requireProducerQuota('genre'));
+// Producer-quota gate is applied per-route below (only on POST /genres
+// proposals + POST /genres/:id/vote). The previous app.use('/genres', ...)
+// caught GET /genres too, which broke the public genre list for any
+// non-paid user who'd ever proposed a genre - the play page dropdowns
+// silently came back empty with a 429 in the network tab.
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
@@ -162,6 +166,7 @@ const createRouteDef = createRoute({
   path: '/genres',
   tags: ['genres'],
   summary: 'Propose a new user genre',
+  middleware: [requireProducerQuota('genre')] as const,
   request: {
     body: {
       content: { 'application/json': { schema: CreateGenreBody } },
