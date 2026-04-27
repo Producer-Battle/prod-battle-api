@@ -31,8 +31,11 @@ const MAILPIT_URL = process.env.MAILPIT_URL ?? 'http://localhost:8025';
 
 function buildAuthApp(): OpenAPIHono {
   const app = new OpenAPIHono();
-  // Mount better-auth at /auth/* exactly like server.ts does.
-  app.on(['GET', 'POST'], '/auth/*', (c) => auth.handler(c.req.raw));
+  // Mirror server.ts. Must use app.all for the auth handler - app.on with
+  // a method array silently drops GET in Hono 4.12.x, which would cause
+  // /auth/verify-email (a GET) to 404 in the live server even when this
+  // test passed.
+  app.all('/auth/*', (c) => auth.handler(c.req.raw));
   app.use('*', attachSession());
   app.use('*', anonId());
   registerRoutes(app);
@@ -110,6 +113,16 @@ describe('auth flow (integration)', () => {
     await fetch(`${MAILPIT_URL}/api/v1/messages`, { method: 'DELETE' }).catch(() => {});
   });
 
+  it('GET /auth/get-session is routed (not 404)', async () => {
+    // Regression guard: a previous server.ts used app.on(['GET','POST'], ...)
+    // which silently dropped GET registrations on Hono 4.12.x, so every
+    // /auth/* GET (including the verify-email link emailed to new sign-ups)
+    // 404'd in the live server. Hitting any GET auth endpoint and asserting
+    // it doesn't 404 is enough to catch that regression.
+    const res = await app.request('/auth/get-session', { method: 'GET' });
+    expect(res.status).not.toBe(404);
+  });
+
   it('signup -> verify via emailed link -> signin succeeds', async () => {
     if (!mailpitOk) {
       console.warn('mailpit not reachable at', MAILPIT_URL, '- skipping');
@@ -142,8 +155,24 @@ describe('auth flow (integration)', () => {
     const verifyPath = new URL(verifyUrl).pathname + new URL(verifyUrl).search;
 
     // 3. Hit the verification URL.
-    const verifyRes = await app.request(verifyPath, { method: 'GET' });
-    expect(verifyRes.status).toBeLessThan(400);
+    const verifyRes = await app.request(verifyPath, { method: 'GET', redirect: 'manual' });
+    // Better-auth responds with a 302 to callbackURL on success.
+    expect(verifyRes.status).toBe(302);
+    // Regression guard: callbackURL MUST point at the web frontend, not
+    // the API origin. Earlier the email leaked the default '/' which
+    // landed users on the API root (404 in the browser) after click.
+    const location = verifyRes.headers.get('location') ?? '';
+    // Mirror the picker in src/auth/config.ts: prefer first https entry,
+    // else first entry, else localhost dev fallback.
+    const candidates = (process.env.WEB_ORIGIN ?? 'http://localhost:5173')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const expectedOrigin =
+      candidates.find((c) => c.startsWith('https://') && !c.includes('*')) ??
+      candidates[0] ??
+      'http://localhost:5173';
+    expect(location.startsWith(expectedOrigin)).toBe(true);
 
     // 4. emailVerified should now be true.
     const [afterVerify] = await db()

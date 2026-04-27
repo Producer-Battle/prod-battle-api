@@ -61,6 +61,24 @@ export const auth = betterAuth({
 
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
+      // Override better-auth's default callbackURL (which is just '/').
+      // The default '/' resolves to the API origin which has no UI -
+      // browsers land on a 404 after click. Send users to the web
+      // frontend instead. WEB_ORIGIN is a comma-separated list of
+      // ALLOWED origins (for CORS); pick the first https entry as the
+      // canonical web URL, falling back to the first entry, else dev.
+      const candidates = (env.WEB_ORIGIN ?? 'http://localhost:5173')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const webOrigin =
+        candidates.find((c) => c.startsWith('https://') && !c.includes('*')) ??
+        candidates[0] ??
+        'http://localhost:5173';
+      const verifyUrl = new URL(url);
+      verifyUrl.searchParams.set('callbackURL', `${webOrigin}/auth/sign-in?verified=1`);
+      const finalUrl = verifyUrl.toString();
+
       // Use nodemailer via SMTP. The compose stack runs mailpit on :1025 in
       // dev; prod uses Scaleway Transactional Email (same SMTP env vars).
       const nodemailer = await import('nodemailer');
@@ -76,8 +94,8 @@ export const auth = betterAuth({
         from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
         to: user.email,
         subject: 'Confirm your Producer Battle account',
-        text: `Welcome to Producer Battle. Confirm your email: ${url}`,
-        html: `<p>Welcome to Producer Battle.</p><p><a href="${url}">Confirm your email</a></p>`,
+        text: `Welcome to Producer Battle. Confirm your email: ${finalUrl}`,
+        html: `<p>Welcome to Producer Battle.</p><p><a href="${finalUrl}">Confirm your email</a></p>`,
       });
     },
     sendOnSignUp: true,

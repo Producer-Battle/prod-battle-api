@@ -39,10 +39,16 @@ app.use(
 );
 
 // better-auth mounts its entire surface area (/sign-in, /sign-up, /session,
-// OAuth callbacks, …) at this one handler. Must be registered BEFORE
-// attachSession so the session cookie set by /sign-up is available on the
-// same response.
-app.on(['GET', 'POST'], '/auth/*', (c) => auth.handler(c.req.raw));
+// /verify-email, OAuth callbacks, …) at this one handler. Must be
+// registered BEFORE attachSession so the session cookie set by /sign-up
+// is available on the same response.
+//
+// IMPORTANT: use app.all here, NOT app.on(['GET', 'POST'], ...). In
+// Hono 4.12.x app.on with a method array silently drops GET in some
+// router configurations - which means /auth/verify-email (the GET
+// endpoint emailed to new sign-ups) 404s while POST routes still work.
+// app.all registers for every HTTP verb and avoids that footgun.
+app.all('/auth/*', (c) => auth.handler(c.req.raw));
 
 // Populate c.var.user / c.var.session for every downstream handler.
 // Never blocks anonymous requests.
