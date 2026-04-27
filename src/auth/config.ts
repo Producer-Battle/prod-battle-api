@@ -76,10 +76,13 @@ export const auth = betterAuth({
           'http://localhost:5173';
         const signInUrl = `${webOrigin}/auth/sign-in`;
         const nodemailer = await import('nodemailer');
+        const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
         const transport = nodemailer.createTransport({
           host: process.env.SMTP_HOST,
-          port: Number(process.env.SMTP_PORT ?? 1025),
-          secure: false,
+          port: smtpPort,
+          // Port 465 = SMTPS (TLS-on-connect). Anything else uses plain
+          // STARTTLS (587) or unencrypted (1025 dev mailpit).
+          secure: smtpPort === 465,
           auth: process.env.SMTP_USER
             ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
             : undefined,
@@ -117,13 +120,15 @@ export const auth = betterAuth({
       verifyUrl.searchParams.set('callbackURL', `${webOrigin}/auth/sign-in?verified=1`);
       const finalUrl = verifyUrl.toString();
 
-      // Use nodemailer via SMTP. The compose stack runs mailpit on :1025 in
-      // dev; prod uses Scaleway Transactional Email (same SMTP env vars).
+      // Use nodemailer via SMTP. The compose stack runs mailpit on :1025
+      // in dev; prod uses Mailu via SMTPS on port 465.
       const nodemailer = await import('nodemailer');
+      const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
       const transport = nodemailer.createTransport({
         host: process.env.SMTP_HOST,
-        port: Number(process.env.SMTP_PORT ?? 1025),
-        secure: false,
+        port: smtpPort,
+        // 465 = SMTPS (TLS-on-connect). Other ports use plain or STARTTLS.
+        secure: smtpPort === 465,
         auth: process.env.SMTP_USER
           ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
           : undefined,
