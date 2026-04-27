@@ -1009,6 +1009,70 @@ function generateRoomCode(): string {
   return s;
 }
 
+// Genre promotion scan. User-proposed genres start at status='proposed'
+// with votingEndsAt = now + 7 days. When the window closes:
+//   - genres with >= GENRE_VOTE_THRESHOLD unique votes flip to 'active'
+//     (usable by everyone for match creation)
+//   - genres below the threshold flip to 'archived' (hidden from public
+//     lists; the row is preserved for audit / re-proposal).
+// Threshold is 3 by default - matches the FAQ-documented promotion
+// rule. Throttled to once per hour - this is a slow-moving signal.
+const GENRE_VOTE_THRESHOLD = 3;
+let lastGenrePromotionScanAt = 0;
+
+async function genrePromotionScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastGenrePromotionScanAt < 3_600_000) return;
+  lastGenrePromotionScanAt = now;
+
+  const d = db();
+
+  // Promote any proposed genre whose voting window has closed and has
+  // at least the threshold of votes. Single SQL pass (idempotent via
+  // status='proposed' guard).
+  const promoted = await d.execute<{ id: string; slug: string; votes: string }>(
+    sql`WITH eligible AS (
+          SELECT g.id, g.slug,
+                 (SELECT COUNT(*) FROM genre_votes gv WHERE gv.genre_id = g.id) AS votes
+            FROM genres g
+           WHERE g.status = 'proposed'
+             AND g.voting_ends_at IS NOT NULL
+             AND g.voting_ends_at < now()
+        ),
+        promoted AS (
+          UPDATE genres SET status = 'active', voting_ends_at = NULL
+           WHERE id IN (SELECT id FROM eligible WHERE votes >= ${GENRE_VOTE_THRESHOLD})
+           RETURNING id, slug
+        )
+        SELECT p.id, p.slug, e.votes::text FROM promoted p JOIN eligible e ON e.id = p.id`,
+  );
+  for (const row of promoted as Array<{ id: string; slug: string; votes: string }>) {
+    console.log(`[genre-promote] ${row.slug} promoted with ${row.votes} votes`);
+  }
+
+  // Archive any proposed genre whose window has closed and has fewer
+  // votes than the threshold.
+  const archived = await d.execute<{ id: string; slug: string; votes: string }>(
+    sql`WITH eligible AS (
+          SELECT g.id, g.slug,
+                 (SELECT COUNT(*) FROM genre_votes gv WHERE gv.genre_id = g.id) AS votes
+            FROM genres g
+           WHERE g.status = 'proposed'
+             AND g.voting_ends_at IS NOT NULL
+             AND g.voting_ends_at < now()
+        ),
+        archived AS (
+          UPDATE genres SET status = 'archived', voting_ends_at = NULL
+           WHERE id IN (SELECT id FROM eligible WHERE votes < ${GENRE_VOTE_THRESHOLD})
+           RETURNING id, slug
+        )
+        SELECT a.id, a.slug, e.votes::text FROM archived a JOIN eligible e ON e.id = a.id`,
+  );
+  for (const row of archived as Array<{ id: string; slug: string; votes: string }>) {
+    console.log(`[genre-promote] ${row.slug} archived (only ${row.votes} votes)`);
+  }
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -1033,6 +1097,9 @@ export function startTickLoop(): () => void {
       payoutMonthlyScan().catch((err: Error) => console.error('[payout] error:', err.message));
       tournamentScheduleScan().catch((err: Error) =>
         console.error('[tournament-sched] error:', err.message),
+      );
+      genrePromotionScan().catch((err: Error) =>
+        console.error('[genre-promote] error:', err.message),
       );
     }, 1000);
   });
