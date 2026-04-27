@@ -15,6 +15,7 @@
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { sql } from 'drizzle-orm';
+import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 
 // ─── Seasonal leaderboard ────────────────────────────────────────────────────
@@ -105,15 +106,17 @@ leaderboardRoutes.openapi(leaderboardRoute, async (c) => {
      LIMIT ${limit}
   `);
 
-  const items = rows.map((r, i) => ({
-    rank: i + 1,
-    userId: r.user_id,
-    handle: r.handle,
-    avatarUrl: r.avatar_url,
-    matchesPlayed: Number(r.matches_played),
-    wins: Number(r.wins),
-    points: Number(r.points),
-  }));
+  const items = await Promise.all(
+    rows.map(async (r, i) => ({
+      rank: i + 1,
+      userId: r.user_id,
+      handle: r.handle,
+      avatarUrl: r.avatar_url ? await signUrl(r.avatar_url, 3600) : null,
+      matchesPlayed: Number(r.matches_played),
+      wins: Number(r.wins),
+      points: Number(r.points),
+    })),
+  );
 
   // Pull the caller's row separately (and compute their rank across the
   // unlimited list, not just the top `limit`). Null for anon requests.
@@ -269,38 +272,40 @@ leaderboardRoutes.openapi(seasonLeaderboardRoute, async (c) => {
      LIMIT 100
   `);
 
-  const items = (
-    rows as Array<{
-      user_id: string;
-      handle: string;
-      avatar_url: string | null;
-      plan: string;
-      genre_slug: string;
-      rating: string;
-      rd: string;
-      wins: string;
-      losses: string;
-    }>
-  ).map((r, i) => {
-    const rank = i + 1;
-    const plan = r.plan as 'free' | 'paid';
-    const tier = rewardTier(rank);
-    return {
-      rank,
-      userId: r.user_id,
-      handle: r.handle,
-      avatarUrl: r.avatar_url,
-      plan,
-      genreSlug: r.genre_slug,
-      rating: Number(r.rating),
-      wins: Number(r.wins),
-      losses: Number(r.losses),
-      rewardTier: tier,
-      // Prize eligibility requires a paid plan (free users are excluded from
-      // prize redemption even if they place in the top tier).
-      prizeEligible: plan === 'paid',
-    };
-  });
+  const items = await Promise.all(
+    (
+      rows as Array<{
+        user_id: string;
+        handle: string;
+        avatar_url: string | null;
+        plan: string;
+        genre_slug: string;
+        rating: string;
+        rd: string;
+        wins: string;
+        losses: string;
+      }>
+    ).map(async (r, i) => {
+      const rank = i + 1;
+      const plan = r.plan as 'free' | 'paid';
+      const tier = rewardTier(rank);
+      return {
+        rank,
+        userId: r.user_id,
+        handle: r.handle,
+        avatarUrl: r.avatar_url ? await signUrl(r.avatar_url, 3600) : null,
+        plan,
+        genreSlug: r.genre_slug,
+        rating: Number(r.rating),
+        wins: Number(r.wins),
+        losses: Number(r.losses),
+        rewardTier: tier,
+        // Prize eligibility requires a paid plan (free users are excluded from
+        // prize redemption even if they place in the top tier).
+        prizeEligible: plan === 'paid',
+      };
+    }),
+  );
 
   return c.json(
     {

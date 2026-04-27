@@ -8,7 +8,7 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
 import Redis from 'ioredis';
-import { signUrl } from '../audio/s3.js';
+import { presignAvatarUpload, signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import {
   accounts,
@@ -59,6 +59,8 @@ const MeResponse = z
     plan: z.enum(['free', 'paid']),
     status: z.enum(['active', 'archived', 'deleted']),
     avatarUrl: z.string().nullable(),
+    bio: z.string().nullable(),
+    socialLinks: z.record(z.string(), z.string()),
     createdAt: z.string(),
     stats: z.object({
       totalMatches: z.number().int(),
@@ -98,8 +100,11 @@ meRoutes.openapi(getMeRoute, async (c) => {
       status: users.status,
       avatarUrl: users.avatarUrl,
       createdAt: users.createdAt,
+      bio: producerProfiles.bio,
+      socialLinks: producerProfiles.socialLinks,
     })
     .from(users)
+    .leftJoin(producerProfiles, eq(producerProfiles.userId, users.id))
     .where(eq(users.id, user.id))
     .limit(1);
 
@@ -126,7 +131,9 @@ meRoutes.openapi(getMeRoute, async (c) => {
       role: row.role,
       plan: row.plan,
       status: row.status,
-      avatarUrl: row.avatarUrl ?? null,
+      avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+      bio: row.bio ?? null,
+      socialLinks: row.socialLinks ?? {},
       createdAt: row.createdAt.toISOString(),
       stats: {
         totalMatches: Number(stats?.total_matches ?? 0),
@@ -146,6 +153,8 @@ const PatchMeBody = z
   .object({
     handle: z.string().regex(HANDLE_RE, 'Handle must be 3-20 chars [a-zA-Z0-9_-]').optional(),
     avatarUrl: z.string().url('avatarUrl must be a valid URL').nullable().optional(),
+    bio: z.string().max(500).nullable().optional(),
+    socialLinks: z.record(z.string(), z.string().url()).nullable().optional(),
   })
   .openapi('PatchMeBody');
 
@@ -200,6 +209,34 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       .where(eq(users.id, user.id));
   }
 
+  // Upsert producer_profiles when bio or socialLinks is provided.
+  const profileUpdates: {
+    bio?: string | null;
+    socialLinks?: Record<string, string>;
+  } = {};
+  if (body.bio !== undefined) profileUpdates.bio = body.bio;
+  // socialLinks null from the client means "clear all links" - store as empty object
+  // since the column is NOT NULL.
+  if (body.socialLinks !== undefined) {
+    profileUpdates.socialLinks = body.socialLinks ?? {};
+  }
+
+  if (Object.keys(profileUpdates).length > 0) {
+    await d
+      .insert(producerProfiles)
+      .values({
+        userId: user.id,
+        // Default new rows to openToAr: true (platform default).
+        openToAr: true,
+        bio: profileUpdates.bio ?? null,
+        socialLinks: profileUpdates.socialLinks ?? {},
+      })
+      .onConflictDoUpdate({
+        target: producerProfiles.userId,
+        set: profileUpdates,
+      });
+  }
+
   const [row] = await d
     .select({
       id: users.id,
@@ -210,8 +247,11 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       status: users.status,
       avatarUrl: users.avatarUrl,
       createdAt: users.createdAt,
+      bio: producerProfiles.bio,
+      socialLinks: producerProfiles.socialLinks,
     })
     .from(users)
+    .leftJoin(producerProfiles, eq(producerProfiles.userId, users.id))
     .where(eq(users.id, user.id))
     .limit(1);
 
@@ -238,7 +278,9 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       role: row.role,
       plan: row.plan,
       status: row.status,
-      avatarUrl: row.avatarUrl ?? null,
+      avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+      bio: row.bio ?? null,
+      socialLinks: row.socialLinks ?? {},
       createdAt: row.createdAt.toISOString(),
       stats: {
         totalMatches: Number(stats?.total_matches ?? 0),
@@ -248,6 +290,51 @@ meRoutes.openapi(patchMeRoute, async (c) => {
     },
     200,
   );
+});
+
+// ─── POST /me/avatar/upload-url ─────────────────────────────────────────────
+
+const AvatarUploadUrlBody = z
+  .object({
+    contentType: z.enum(['image/jpeg', 'image/png']),
+  })
+  .openapi('AvatarUploadUrlBody');
+
+const AvatarUploadUrlResponse = z
+  .object({
+    uploadUrl: z.string().url(),
+    publicUrl: z.string().url(),
+    key: z.string(),
+    maxBytes: z.number().int(),
+  })
+  .openapi('AvatarUploadUrlResponse');
+
+const avatarUploadUrlRoute = createRoute({
+  method: 'post',
+  path: '/me/avatar/upload-url',
+  tags: ['profile'],
+  summary: 'Get a presigned S3 PUT URL for avatar upload',
+  middleware: [requireAuth()] as const,
+  request: {
+    body: { content: { 'application/json': { schema: AvatarUploadUrlBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Presigned upload URL',
+      content: { 'application/json': { schema: AvatarUploadUrlResponse } },
+    },
+    400: { description: 'Unsupported content type' },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(avatarUploadUrlRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+  const { contentType } = c.req.valid('json');
+
+  const result = await presignAvatarUpload(user.id, contentType);
+  return c.json(result, 200);
 });
 
 // ─── POST /me/claim-guest-handle ────────────────────────────────────────────
@@ -495,6 +582,7 @@ const PublicProfileResponse = z
     avatarUrl: z.string().nullable(),
     role: z.enum(['producer', 'ar', 'admin']),
     bio: z.string().nullable(),
+    socialLinks: z.record(z.string(), z.string()),
     createdAt: z.string(),
     recentSubmissions: z.array(PublicSubmission),
   })
@@ -530,21 +618,17 @@ meRoutes.openapi(getUserRoute, async (c) => {
       avatarUrl: users.avatarUrl,
       status: users.status,
       createdAt: users.createdAt,
+      bio: producerProfiles.bio,
+      socialLinks: producerProfiles.socialLinks,
     })
     .from(users)
+    .leftJoin(producerProfiles, eq(producerProfiles.userId, users.id))
     .where(eq(users.handle, normalised))
     .limit(1);
 
   if (!row || row.status !== 'active') {
     return c.json({ error: 'not found' }, 404);
   }
-
-  // Fetch bio from producer_profiles (may not exist yet for all users).
-  const [profile] = await d
-    .select({ bio: producerProfiles.bio })
-    .from(producerProfiles)
-    .where(eq(producerProfiles.userId, row.id))
-    .limit(1);
 
   // Top 10 recent submissions with match mode.
   const subRows = await d.execute<{
@@ -580,9 +664,10 @@ meRoutes.openapi(getUserRoute, async (c) => {
 
   return c.json({
     handle: row.handle,
-    avatarUrl: row.avatarUrl ?? null,
+    avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
     role: row.role,
-    bio: profile?.bio ?? null,
+    bio: row.bio ?? null,
+    socialLinks: row.socialLinks ?? {},
     createdAt: row.createdAt.toISOString(),
     recentSubmissions,
   });

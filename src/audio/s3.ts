@@ -71,3 +71,35 @@ export async function signUrl(url: string, ttlSec = 86_400): Promise<string> {
   if (!key) return url; // not ours - pass through
   return signedDownloadUrl(key, ttlSec);
 }
+
+/**
+ * Generate a presigned PUT URL for avatar uploads.
+ *
+ * The key is always `avatars/<userId>.<ext>` so repeated uploads overwrite the
+ * same object (no orphan files). The extension is derived from the MIME type.
+ *
+ * Returns the presigned uploadUrl, the resulting public URL (unsigned), and
+ * the S3 key. Size enforcement is left to the client (maxBytes is a hint only;
+ * S3 presigned PUTs don't natively support Content-Length checks on the server
+ * side without a policy document - track as a follow-up if needed).
+ */
+export async function presignAvatarUpload(
+  userId: string,
+  contentType: 'image/jpeg' | 'image/png',
+  ttlSec = 600,
+): Promise<{ uploadUrl: string; publicUrl: string; key: string; maxBytes: number }> {
+  const ext = contentType === 'image/jpeg' ? 'jpg' : 'png';
+  const key = `avatars/${userId}.${ext}`;
+  const b = bucket();
+  const uploadUrl = await getSignedUrl(
+    s3(),
+    new PutObjectCommand({ Bucket: b, Key: key, ContentType: contentType }),
+    { expiresIn: ttlSec },
+  );
+  return {
+    uploadUrl,
+    publicUrl: publicUrl(key),
+    key,
+    maxBytes: 2 * 1024 * 1024,
+  };
+}

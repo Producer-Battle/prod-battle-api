@@ -1,4 +1,4 @@
-// E2E tests for GET /me, PATCH /me, and GET /users/:handle.
+// E2E tests for GET /me, PATCH /me, POST /me/avatar/upload-url, and GET /users/:handle.
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildTestApp, getJson, postJson } from '../harness.js';
@@ -153,5 +153,125 @@ describe('profile endpoints', () => {
     const app = buildTestApp();
     const { status } = await getJson(app, `/users/${u.handle}`);
     expect(status).toBe(404);
+  });
+
+  // ─── POST /me/avatar/upload-url ───────────────────────────────────────────
+
+  it('POST /me/avatar/upload-url returns a presigned URL for image/jpeg', async () => {
+    const u = await seedTestUser('avatar-upload-jpeg', { plan: 'free', role: 'producer' });
+    const app = buildTestApp({ asUser: u });
+
+    const { status, json } = await postJson<{
+      uploadUrl: string;
+      publicUrl: string;
+      key: string;
+      maxBytes: number;
+    }>(app, '/me/avatar/upload-url', { contentType: 'image/jpeg' });
+
+    expect(status).toBe(200);
+    // In the test environment the AWS SDK presigner is mocked so the URL is
+    // a stable fake value - just verify it is a non-empty string.
+    expect(typeof json.uploadUrl).toBe('string');
+    expect(json.uploadUrl.length).toBeGreaterThan(0);
+    expect(json.key).toBe(`avatars/${u.id}.jpg`);
+    expect(json.publicUrl).toContain(`avatars/${u.id}.jpg`);
+    expect(json.maxBytes).toBe(2 * 1024 * 1024);
+  });
+
+  it('POST /me/avatar/upload-url rejects unsupported content type with 400', async () => {
+    const u = await seedTestUser('avatar-upload-pdf', { plan: 'free', role: 'producer' });
+    const app = buildTestApp({ asUser: u });
+
+    const { status } = await postJson(app, '/me/avatar/upload-url', {
+      contentType: 'application/pdf',
+    });
+
+    expect(status).toBe(400);
+  });
+
+  // ─── PATCH /me with bio + socialLinks ─────────────────────────────────────
+
+  it('PATCH /me with bio + socialLinks persists and returns them on GET /me', async () => {
+    const u = await seedTestUser('bio-social-user', { plan: 'free', role: 'producer' });
+    const app = buildTestApp({ asUser: u });
+
+    // Patch with bio and socialLinks.
+    const patchRes = await app.request('/me', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        bio: 'Making beats since 2010.',
+        socialLinks: {
+          spotify: 'https://open.spotify.com/artist/test',
+          soundcloud: 'https://soundcloud.com/test',
+        },
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+    const patchBody = (await patchRes.json()) as {
+      bio: string | null;
+      socialLinks: Record<string, string>;
+    };
+    expect(patchBody.bio).toBe('Making beats since 2010.');
+    expect(patchBody.socialLinks.spotify).toBe('https://open.spotify.com/artist/test');
+    expect(patchBody.socialLinks.soundcloud).toBe('https://soundcloud.com/test');
+
+    // Verify persistence via GET /me.
+    const { status, json } = await getJson<{
+      bio: string | null;
+      socialLinks: Record<string, string>;
+    }>(app, '/me');
+    expect(status).toBe(200);
+    expect(json.bio).toBe('Making beats since 2010.');
+    expect(json.socialLinks.spotify).toBe('https://open.spotify.com/artist/test');
+  });
+
+  // ─── GET /users/:handle returns bio + socialLinks ─────────────────────────
+
+  it('GET /users/:handle returns bio + socialLinks publicly', async () => {
+    const u = await seedTestUser('public-bio-user', { plan: 'free', role: 'producer' });
+    const ownerApp = buildTestApp({ asUser: u });
+
+    // Set bio and socialLinks via PATCH as the owner.
+    const patchRes = await ownerApp.request('/me', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        bio: 'Public bio text.',
+        socialLinks: { website: 'https://example.com' },
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+
+    // Fetch the public profile as an anonymous visitor.
+    const anonApp = buildTestApp();
+    const { status, json } = await getJson<{
+      handle: string;
+      bio: string | null;
+      socialLinks: Record<string, string>;
+      email?: string;
+    }>(anonApp, `/users/${u.handle}`);
+
+    expect(status).toBe(200);
+    expect(json.bio).toBe('Public bio text.');
+    expect(json.socialLinks.website).toBe('https://example.com');
+    // email must still not be present on public profiles.
+    expect(json.email).toBeUndefined();
+  });
+
+  // ─── GET /me with no producer_profile row returns graceful defaults ────────
+
+  it('GET /me with no producer_profile row returns bio: null and socialLinks: {}', async () => {
+    const u = await seedTestUser('no-profile-user', { plan: 'free', role: 'producer' });
+    const app = buildTestApp({ asUser: u });
+
+    const { status, json } = await getJson<{
+      bio: string | null;
+      socialLinks: Record<string, string>;
+    }>(app, '/me');
+
+    expect(status).toBe(200);
+    expect(json.bio).toBeNull();
+    expect(json.socialLinks).toEqual({});
   });
 });
