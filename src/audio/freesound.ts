@@ -43,9 +43,37 @@ function token(): string {
   return env.FREESOUND_API_KEY;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function rawSearch(opts: {
+  query: string;
+  minD: number;
+  maxD: number;
+  pageSize: number;
+  page: number;
+}): Promise<Response> {
+  const url = new URL('/apiv2/search/text/', FREESOUND_API);
+  url.searchParams.set('query', opts.query);
+  url.searchParams.set(
+    'filter',
+    `duration:[${opts.minD} TO ${opts.maxD}] license:"Creative Commons 0"`,
+  );
+  url.searchParams.set('fields', 'id,name,username,license,duration,previews');
+  url.searchParams.set('page_size', String(opts.pageSize));
+  url.searchParams.set('page', String(opts.page));
+  return fetch(url.toString(), { headers: { Authorization: `Token ${token()}` } });
+}
+
 /**
  * Search Freesound and return up to `count` random hits. Filters to short
- * CC0 sounds suitable as one-shot stems.
+ * CC0 sounds suitable as one-shot stems. Handles two failure modes the
+ * upstream API surfaces noisily:
+ *   - 404 on page>1 when the result set has fewer rows than page_size.
+ *     Falls back to page 1 once.
+ *   - 429 rate limit (60/min on the free tier). Sleeps for the Retry-After
+ *     window (capped at 60s) and retries once.
  */
 export async function searchStems(opts: {
   query: string;
@@ -58,18 +86,27 @@ export async function searchStems(opts: {
   const minD = opts.minDurationSec ?? 0.1;
   const maxD = opts.maxDurationSec ?? 4;
   const pageSize = Math.min(150, Math.max(count * 3, 30));
-  const page = opts.page ?? 1;
+  const requestedPage = opts.page ?? 1;
 
-  const url = new URL('/apiv2/search/text/', FREESOUND_API);
-  url.searchParams.set('query', opts.query);
-  url.searchParams.set('filter', `duration:[${minD} TO ${maxD}] license:"Creative Commons 0"`);
-  url.searchParams.set('fields', 'id,name,username,license,duration,previews');
-  url.searchParams.set('page_size', String(pageSize));
-  url.searchParams.set('page', String(page));
+  const fetchOnce = (page: number) => rawSearch({ query: opts.query, minD, maxD, pageSize, page });
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Token ${token()}` },
-  });
+  let res = await fetchOnce(requestedPage);
+
+  // 429 -> back off once and retry on the same page.
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get('retry-after')) || 30;
+    const waitMs = Math.min(retryAfter, 60) * 1000;
+    console.warn(`[freesound] 429 rate-limited, waiting ${waitMs / 1000}s before retry`);
+    await sleep(waitMs);
+    res = await fetchOnce(requestedPage);
+  }
+
+  // 404 typically means the requested page is past the result set.
+  // Retry on page 1 if we weren't already there.
+  if (res.status === 404 && requestedPage !== 1) {
+    res = await fetchOnce(1);
+  }
+
   if (!res.ok) {
     throw new Error(`Freesound search failed: ${res.status} ${await res.text()}`);
   }

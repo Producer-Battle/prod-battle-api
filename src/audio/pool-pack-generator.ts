@@ -100,8 +100,10 @@ export async function generatePackItems(
   for (const stemType of stemTypes) {
     const item = await fetchAndStoreStem(genreSlug, stemType);
     if (item) items.push(item);
-    // 150ms inter-request delay keeps us comfortably under 60 req/min.
-    await sleep(150);
+    // Each stem takes 1 search request + 1 preview download (also rate-limited
+    // by Freesound). 1100ms keeps us at ~54 search req/min, well under the
+    // 60/min cap, with headroom for parallel admin actions.
+    await sleep(1100);
   }
   return items;
 }
