@@ -5,11 +5,13 @@
 //   GET  /matches/:code/results  - final leaderboard with revealed identities
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { eq, sql } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { matches, submissions, users, votes } from '../db/schema.js';
+import { matchPlayers, matches, submissions, users, votes } from '../db/schema.js';
+import { getCategory } from '../game-rules/loader.js';
 import { maybeAdvanceAfterVote } from '../room/transitions.js';
+import { computeVoteWeight } from '../voting/weight.js';
 
 export const phasesRoutes = new OpenAPIHono();
 
@@ -144,6 +146,26 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   }
   if (!u) return c.json({ error: 'user not found' }, 404);
 
+  // Min-matches gate: a brand new account can't shape the vote tally
+  // until they've completed a few matches themselves. Stops fresh-account
+  // vote farms. Configurable via game_rules.voting.minMatchesBeforeVotesCount.
+  const votingRules = await getCategory('voting');
+  if (votingRules.minMatchesBeforeVotesCount > 0) {
+    const [played] = await d
+      .select({ n: count() })
+      .from(matchPlayers)
+      .where(and(eq(matchPlayers.userId, u.id), eq(matchPlayers.abandoned, false)));
+    if (Number(played?.n ?? 0) < votingRules.minMatchesBeforeVotesCount) {
+      return c.json(
+        {
+          error: 'too_new',
+          message: `Play at least ${votingRules.minMatchesBeforeVotesCount} matches before your votes count.`,
+        },
+        403,
+      );
+    }
+  }
+
   // Load all submissions in this match so we can enforce no-self-vote and
   // only-valid-ids.
   const subs = await d
@@ -161,23 +183,29 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     }
   }
 
+  // Apply honor + premium multiplier to the raw 1-5 score before storing.
+  const isPremium = u.plan === 'paid';
+  const weightFor = (rawScore: number): number =>
+    computeVoteWeight({ rawScore, honor: u.honor, isPremium, rules: votingRules });
+
   let accepted = 0;
   for (const v of body.votes) {
     const s = subById.get(v.submissionId);
     if (!s) continue; // bad id - ignore
 
-    // Upsert (match, voter, submission) -> weight=score
+    // Upsert (match, voter, submission) with the weighted score.
+    const weight = weightFor(v.score);
     await d
       .insert(votes)
       .values({
         matchId: m.id,
         voterId: u.id,
         submissionId: v.submissionId,
-        weight: String(v.score),
+        weight: String(weight),
       })
       .onConflictDoUpdate({
         target: [votes.matchId, votes.voterId, votes.submissionId],
-        set: { weight: String(v.score) },
+        set: { weight: String(weight) },
       });
     accepted++;
   }

@@ -119,7 +119,10 @@ async function seedRulesAndSeasons(): Promise<void> {
     {
       category: 'voting',
       payload: {
-        minMatchesBeforeVotesCount: 3,
+        // Test seed sets the gate to 0 - existing e2e tests build fresh
+        // users per scenario and would never clear a 3-match warmup.
+        // Production migration 0017 keeps it at 3.
+        minMatchesBeforeVotesCount: 0,
         selfVoteAllowed: false,
         downvotesEnabled: false,
         honorWeightCurve: [

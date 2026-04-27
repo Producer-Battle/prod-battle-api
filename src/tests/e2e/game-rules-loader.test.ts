@@ -19,7 +19,9 @@ describe('game-rules loader', () => {
     expect(rules.honor.gates.ranked).toBe(50);
     expect(rules.tiers.calibrationMatches).toBe(10);
     expect(rules.tiers.boundaries).toHaveLength(7);
-    expect(rules.voting.minMatchesBeforeVotesCount).toBe(3);
+    // Test seed overrides this to 0 so existing e2e flows don't trip the
+    // min-matches gate; production migration 0017 keeps it at 3.
+    expect(rules.voting.minMatchesBeforeVotesCount).toBe(0);
     expect(rules.revenue.creatorPoolPercentOfPremium).toBe(5);
     expect(rules.reconnect.graceSeconds).toBe(120);
     expect(rules.achievements.enabled.tier_grandmaster).toBe(true);
