@@ -83,28 +83,27 @@ describe('mode: ranked', () => {
 
   // ─── Ranked creation gate tests ───────────────────────────────────────────
 
-  it('ranked gate: anonymous request returns 402', async () => {
+  it('ranked gate: anonymous request returns 401', async () => {
     const anonApp = buildTestApp(); // no asUser -> anonymous
     const { status, json } = await postJson<{ error: string }>(anonApp, '/matches', {
       mode: 'ranked',
       genreSlug: TEST_GENRE_SLUG,
     });
-    expect(status).toBe(402);
-    expect((json as { error: string }).error).toBe('ranked_requires_pro');
+    expect(status).toBe(401);
+    expect((json as { error: string }).error).toBe('ranked_requires_signin');
   });
 
-  it('ranked gate: free authenticated producer returns 402', async () => {
+  it('ranked gate: free authenticated producer can create', async () => {
     const freeUser = await seedTestUser(uniqueHandle('rk-free'), {
       plan: 'free',
       role: 'producer',
     });
     const freeApp = buildTestApp({ asUser: freeUser });
-    const { status, json } = await postJson<{ error: string }>(freeApp, '/matches', {
+    const match = await createMatch(freeApp, {
       mode: 'ranked',
       genreSlug: TEST_GENRE_SLUG,
     });
-    expect(status).toBe(402);
-    expect((json as { error: string }).error).toBe('ranked_requires_pro');
+    expect(match.mode).toBe('ranked');
   });
 
   it('ranked gate: paid producer returns 201', async () => {
