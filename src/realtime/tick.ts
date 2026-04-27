@@ -571,6 +571,148 @@ async function graceCheck(): Promise<void> {
   }
 }
 
+// Vote-ring detection. Mutual upvote pairs (A votes for B, B votes for A,
+// both with high weight, in nearby matches) get flagged into the reports
+// queue for admin review. Rules-driven: minMutualVotePairs sets the
+// threshold; maxIntervalMinutes scopes "nearby in time".
+let lastRingScanAt = 0;
+
+async function voteRingScan(): Promise<void> {
+  const now = Date.now();
+  // Run every 15 minutes - heavy query, low signal velocity.
+  if (now - lastRingScanAt < 900_000) return;
+  lastRingScanAt = now;
+
+  const d = db();
+  const { getCategory } = await import('../game-rules/loader.js');
+  const votingRules = await getCategory('voting').catch(() => null);
+  if (!votingRules || !votingRules.ringDetection.enabled) return;
+  const minPairs = votingRules.ringDetection.minMutualVotePairs;
+  const intervalMin = votingRules.ringDetection.maxIntervalMinutes;
+
+  // Find pairs of users who voted on each other's submissions within
+  // intervalMin minutes, with weight >= 4 (top 2 of 1-5 scale).
+  // GROUP by ordered pair to dedupe (A,B) vs (B,A).
+  const rows = await d.execute<{
+    a: string;
+    b: string;
+    n_pairs: string;
+  }>(
+    sql`WITH mutual AS (
+          SELECT
+            LEAST(va.voter_id, vb.voter_id)    AS a,
+            GREATEST(va.voter_id, vb.voter_id) AS b
+            FROM votes va
+            JOIN submissions sa ON sa.id = va.submission_id
+            JOIN votes vb       ON vb.voter_id = sa.user_id
+            JOIN submissions sb ON sb.id = vb.submission_id AND sb.user_id = va.voter_id
+           WHERE va.weight >= 4
+             AND vb.weight >= 4
+             AND ABS(EXTRACT(EPOCH FROM (vb.created_at - va.created_at))) < ${intervalMin * 60}
+             AND va.voter_id != vb.voter_id
+        )
+        SELECT a, b, COUNT(*)::text AS n_pairs
+          FROM mutual
+         GROUP BY a, b
+         HAVING COUNT(*) >= ${minPairs}`,
+  );
+
+  const arr = rows as Array<{ a: string; b: string; n_pairs: string }>;
+  for (const row of arr) {
+    // Dedupe against existing open reports for this pair so we don't
+    // spam the queue every 15 min until an admin acts.
+    const existing = await d.execute<{ id: string }>(
+      sql`SELECT id FROM reports
+           WHERE status = 'open'
+             AND reason = 'vote_ring'
+             AND notes = ${`pair=${row.a},${row.b}`}
+           LIMIT 1`,
+    );
+    if ((existing as Array<{ id: string }>).length > 0) continue;
+
+    await d.execute(
+      sql`INSERT INTO reports (subject_type, subject_id, reporter_id, reason, notes, status)
+            VALUES ('profile', ${row.a}, NULL, 'vote_ring', ${`pair=${row.a},${row.b}`}, 'open')`,
+    );
+    console.log(
+      `[vote-ring] flagged pair (${row.a}, ${row.b}) - ${row.n_pairs} mutual high-weight pairs`,
+    );
+  }
+}
+
+// Monthly creator payout snapshot. Once per UTC day we check whether
+// last calendar month has a creator_payouts row yet; if not, compute
+// the per-creator distribution and insert the rows. Distribution math
+// mirrors /admin/pack-payouts. Pool size is the configured percent of
+// premium revenue, but until billing wires that signal we conservatively
+// snapshot at $0 = below threshold so the rows still land for audit
+// (admin can edit amount_cents and mark as paid).
+let lastPayoutScanAt = 0;
+
+async function payoutMonthlyScan(): Promise<void> {
+  const now = Date.now();
+  // Once per hour. Cheap "is it last month yet?" check + skip if rows
+  // already exist.
+  if (now - lastPayoutScanAt < 3_600_000) return;
+  lastPayoutScanAt = now;
+
+  const d = db();
+  // Window: previous calendar month, UTC.
+  const today = new Date();
+  const periodEnd = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const periodStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+
+  // Already snapshotted this period?
+  const existing = await d.execute<{ n: string }>(
+    sql`SELECT COUNT(*)::text AS n FROM creator_payouts
+         WHERE period_start = ${periodStart.toISOString()}::timestamptz
+           AND period_end   = ${periodEnd.toISOString()}::timestamptz`,
+  );
+  if (Number((existing as Array<{ n: string }>)[0]?.n ?? 0) > 0) return;
+
+  const { getCategory } = await import('../game-rules/loader.js');
+  const revenue = await getCategory('revenue').catch(() => null);
+  if (!revenue) return;
+
+  // Per-creator play counts in the window. Mirrors admin-payouts.ts.
+  const rows = await d.execute<{ creator_id: string; plays: string }>(
+    sql`SELECT sp.created_by AS creator_id, COUNT(*)::text AS plays
+          FROM pack_plays pp
+          JOIN sample_packs sp ON sp.id = pp.pack_id
+         WHERE sp.kind = 'pool'
+           AND sp.created_by IS NOT NULL
+           AND pp.played_at >= ${periodStart.toISOString()}::timestamptz
+           AND pp.played_at <  ${periodEnd.toISOString()}::timestamptz
+         GROUP BY sp.created_by`,
+  );
+  const arr = rows as Array<{ creator_id: string; plays: string }>;
+  if (arr.length === 0) return;
+
+  const totalPlays = arr.reduce((acc, r) => acc + Number(r.plays), 0);
+  // poolCents = 0 until billing flows real revenue. Each row still gets
+  // a 'pending' record so payouts have a paper trail; admin can edit
+  // amount_cents once the period's revenue is known.
+  const poolCents = 0;
+
+  for (const r of arr) {
+    const plays = Number(r.plays);
+    const share = totalPlays > 0 ? plays / totalPlays : 0;
+    const amountCents = Math.floor(poolCents * share);
+    const status = amountCents < revenue.minPayoutThresholdCents ? 'rolled' : 'pending';
+    await d.execute(
+      sql`INSERT INTO creator_payouts
+            (creator_id, period_start, period_end, plays, amount_cents, status)
+            VALUES (${r.creator_id},
+                    ${periodStart.toISOString()}::timestamptz,
+                    ${periodEnd.toISOString()}::timestamptz,
+                    ${plays}, ${amountCents}, ${status})`,
+    );
+  }
+  console.log(
+    `[payout] snapshot for ${periodStart.toISOString().slice(0, 10)}: ${arr.length} creators, ${totalPlays} plays`,
+  );
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -591,6 +733,8 @@ export function startTickLoop(): () => void {
       seasonSoftResetScan().catch((err: Error) =>
         console.error('[soft-reset] error:', err.message),
       );
+      voteRingScan().catch((err: Error) => console.error('[vote-ring] error:', err.message));
+      payoutMonthlyScan().catch((err: Error) => console.error('[payout] error:', err.message));
     }, 1000);
   });
 

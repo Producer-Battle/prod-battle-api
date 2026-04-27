@@ -20,6 +20,7 @@ import { reportsRoutes } from './reports.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
 import { submissionsRoutes } from './submissions.js';
+import { tournamentsRoutes } from './tournaments.js';
 import { userPacksRoutes } from './user-packs.js';
 
 export function registerRoutes(app: OpenAPIHono): void {
@@ -45,4 +46,5 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', billingRoutes);
   app.route('/', achievementsRoutes);
   app.route('/', reportsRoutes);
+  app.route('/', tournamentsRoutes);
 }

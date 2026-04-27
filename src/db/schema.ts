@@ -706,6 +706,32 @@ export const packPlays = pgTable('pack_plays', {
 });
 
 /*
+ * Creator payouts - one row per (creator, period) for the pack
+ * revenue share. Computed monthly from pack_plays + active premium
+ * revenue (the revenue side is plumbed in admin-payouts.ts; this
+ * table is the audit ledger of what's owed and what's been paid).
+ *
+ * status: 'pending' (computed, not paid), 'paid' (money moved),
+ * 'rolled' (under threshold, rolled into next period), 'cancelled'
+ * (admin overrode).
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const creatorPayouts = pgTable('creator_payouts', {
+  id: uuid().primaryKey().defaultRandom(),
+  creatorId: uuid()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  periodStart: timestamp({ withTimezone: true }).notNull(),
+  periodEnd: timestamp({ withTimezone: true }).notNull(),
+  plays: integer().notNull().default(0),
+  amountCents: integer().notNull().default(0),
+  status: text().notNull().default('pending'),
+  paidAt: timestamp({ withTimezone: true }),
+  externalRef: text(), // Mollie payment id when wired up
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
  * Reports - user-flagged content / behaviour. The admin moderation
  * queue drains this table. status='open' until an admin acts; on
  * resolution we record reviewedBy + reviewedAt + the action taken.

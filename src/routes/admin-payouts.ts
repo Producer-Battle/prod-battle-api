@@ -14,8 +14,9 @@
 //     Returns the per-creator payout breakdown for the window.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
+import { creatorPayouts } from '../db/schema.js';
 import { getCategory } from '../game-rules/loader.js';
 
 export const adminPayoutsRoutes = new OpenAPIHono();
@@ -149,3 +150,166 @@ adminPayoutsRoutes.openapi(payoutRoute, async (c) => {
     200,
   );
 });
+
+// ─── GET /admin/payouts/snapshots ────────────────────────────────────────────
+//
+// List the periodic snapshots written by the monthly cron, newest first.
+// Use this to drive the admin payouts table that shows status=pending /
+// rolled / paid per (creator, period).
+
+const SnapshotRow = z.object({
+  id: z.string().uuid(),
+  creatorId: z.string().uuid(),
+  creatorHandle: z.string(),
+  periodStart: z.string().datetime(),
+  periodEnd: z.string().datetime(),
+  plays: z.number().int(),
+  amountCents: z.number().int(),
+  status: z.enum(['pending', 'paid', 'rolled', 'cancelled']),
+  paidAt: z.string().datetime().nullable(),
+  externalRef: z.string().nullable(),
+});
+
+const snapshotsRoute = createRoute({
+  method: 'get',
+  path: '/admin/payouts/snapshots',
+  tags: ['admin', 'payouts'],
+  summary: 'List monthly creator-payout snapshots',
+  responses: {
+    200: {
+      description: 'Snapshots',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(SnapshotRow) }) },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Not an admin', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminPayoutsRoutes.openapi(snapshotsRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const rows = await db().execute<{
+    id: string;
+    creator_id: string;
+    handle: string;
+    period_start: Date;
+    period_end: Date;
+    plays: number;
+    amount_cents: number;
+    status: string;
+    paid_at: Date | null;
+    external_ref: string | null;
+  }>(
+    sql`SELECT cp.id, cp.creator_id, u.handle,
+               cp.period_start, cp.period_end, cp.plays, cp.amount_cents,
+               cp.status, cp.paid_at, cp.external_ref
+          FROM creator_payouts cp
+          JOIN users u ON u.id = cp.creator_id
+         ORDER BY cp.period_start DESC, cp.amount_cents DESC
+         LIMIT 200`,
+  );
+  const arr = rows as Array<{
+    id: string;
+    creator_id: string;
+    handle: string;
+    period_start: Date | string;
+    period_end: Date | string;
+    plays: number;
+    amount_cents: number;
+    status: string;
+    paid_at: Date | string | null;
+    external_ref: string | null;
+  }>;
+  return c.json(
+    {
+      items: arr.map((r) => ({
+        id: r.id,
+        creatorId: r.creator_id,
+        creatorHandle: r.handle,
+        periodStart: new Date(r.period_start).toISOString(),
+        periodEnd: new Date(r.period_end).toISOString(),
+        plays: Number(r.plays),
+        amountCents: Number(r.amount_cents),
+        status: r.status as 'pending' | 'paid' | 'rolled' | 'cancelled',
+        paidAt: r.paid_at ? new Date(r.paid_at).toISOString() : null,
+        externalRef: r.external_ref,
+      })),
+    },
+    200,
+  );
+});
+
+// ─── PATCH /admin/payouts/snapshots/:id ──────────────────────────────────────
+//
+// Admin can edit amount_cents (when revenue lands), mark a row as paid
+// (with externalRef = Mollie payment id), or override status to cancelled.
+
+const PatchSnapshotBody = z.object({
+  amountCents: z.number().int().nonnegative().optional(),
+  status: z.enum(['pending', 'paid', 'rolled', 'cancelled']).optional(),
+  externalRef: z.string().nullable().optional(),
+});
+
+const patchSnapshotRoute = createRoute({
+  method: 'patch',
+  path: '/admin/payouts/snapshots/{id}',
+  tags: ['admin', 'payouts'],
+  summary: 'Adjust or close a creator-payout snapshot',
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: { content: { 'application/json': { schema: PatchSnapshotBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated',
+      content: { 'application/json': { schema: z.object({ id: z.string().uuid() }) } },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Not an admin', content: { 'application/json': { schema: AdminError } } },
+    404: {
+      description: 'Snapshot not found',
+      content: { 'application/json': { schema: AdminError } },
+    },
+  },
+});
+
+adminPayoutsRoutes.openapi(patchSnapshotRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const body = c.req.valid('json');
+
+  const update: Partial<typeof creatorPayouts.$inferInsert> = {};
+  if (body.amountCents !== undefined) update.amountCents = body.amountCents;
+  if (body.status !== undefined) {
+    update.status = body.status;
+    if (body.status === 'paid') update.paidAt = new Date();
+  }
+  if (body.externalRef !== undefined) update.externalRef = body.externalRef;
+  if (Object.keys(update).length === 0)
+    return c.json({ error: 'no_changes', message: 'Nothing to update.' }, 404);
+
+  const result = await db()
+    .update(creatorPayouts)
+    .set(update)
+    .where(eq(creatorPayouts.id, id))
+    .returning({ id: creatorPayouts.id });
+  const row = result[0];
+  if (!row) return c.json({ error: 'not_found', message: 'No such snapshot.' }, 404);
+
+  return c.json({ id: row.id }, 200);
+});
+
+// `desc` import is consumed by drizzle's query builder above; keep it
+// in scope so future helpers (e.g., paginated snapshots) can use it.
+void desc;

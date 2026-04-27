@@ -282,14 +282,33 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     // Prefer lobbies that are still waiting for the 4-player minimum (1-3 seated)
     // over those that are already at or above the minimum but still not full.
     // This batches new players into the same lobby rather than fragmenting.
-    const waitingForMin = openLobbies.find((m) => Number(m.seated) > 0 && Number(m.seated) < 4);
+    //
+    // Anti-smurf cluster guard: for ranked, drop any lobby that has a
+    // seated player sharing an IP cluster with the caller. Falls through
+    // to lobby-creation in that case, which is fine - the smurfer gets
+    // their own room until a non-cluster opponent shows up.
+    type LobbyRow = (typeof openLobbies)[number];
+    let candidates: LobbyRow[] = Array.from(openLobbies);
+    if (body.mode === 'ranked' && c.var.user) {
+      const { isClusterMatch } = await import('../matchmaking/cluster-guard.js');
+      const filtered: LobbyRow[] = [];
+      // Serial loop is fine: openLobbies is small (≤ a few rows in practice)
+      // and each isClusterMatch is one indexed query.
+      for (const lobby of candidates) {
+        const collision = await isClusterMatch(lobby.id, c.var.user.id);
+        if (!collision) filtered.push(lobby);
+      }
+      candidates = filtered;
+    }
+
+    const waitingForMin = candidates.find((m) => Number(m.seated) > 0 && Number(m.seated) < 4);
     const available =
       waitingForMin ??
-      openLobbies.find(
+      candidates.find(
         (m) =>
           Number(m.seated) >= 4 && Number(m.seated) < Number(m.team_size) * Number(m.team_count),
       ) ??
-      openLobbies.find((m) => Number(m.seated) < Number(m.team_size) * Number(m.team_count));
+      candidates.find((m) => Number(m.seated) < Number(m.team_size) * Number(m.team_count));
     if (available) {
       const submitSeconds = available.submit_seconds ?? SUBMIT_SECONDS_DEFAULT[body.mode] ?? 300;
       return c.json(
