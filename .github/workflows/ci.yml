@@ -76,7 +76,21 @@ jobs:
             amazon/aws-cli:latest \
             --endpoint-url http://localhost:9000 \
             s3 mb s3://pb-test
-      - name: Run real-S3 integration tests
+      - name: Start mailpit for auth-flow integration test
+        run: |
+          docker run -d --name mailpit \
+            -p 1025:1025 -p 8025:8025 \
+            -e MP_SMTP_AUTH_ACCEPT_ANY=1 \
+            -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+            axllent/mailpit:latest
+          for i in {1..20}; do
+            if curl -sf http://localhost:8025/api/v1/messages > /dev/null; then
+              echo "mailpit is up"
+              break
+            fi
+            sleep 1
+          done
+      - name: Run real-S3 + auth-flow integration tests
         run: pnpm test:integration
         env:
           S3_ENDPOINT: http://localhost:9000
@@ -85,6 +99,12 @@ jobs:
           S3_REGION: us-east-1
           S3_ACCESS_KEY: minioadmin
           S3_SECRET_KEY: minioadmin
+          SMTP_HOST: localhost
+          SMTP_PORT: '1025'
+          SMTP_FROM: noreply@test.local
+          AUTH_BASE_URL: http://localhost:8080
+          AUTH_TRUSTED_ORIGINS: http://localhost:5173
+          MAILPIT_URL: http://localhost:8025
       - run: pnpm openapi:emit
       - uses: actions/upload-artifact@v4
         with:
