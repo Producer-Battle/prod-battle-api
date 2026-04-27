@@ -63,10 +63,15 @@ export async function rmsLevelDbFs(audioUrl: string, timeoutMs = 8000): Promise<
 }
 
 // Cheap signal of "silent enough to be a grief submission". Returns
-// true if RMS is below the configured threshold AND we're confident
-// in the reading (not -Infinity from a broken file - that's a separate
-// "corrupted upload" failure, handled at the upload layer).
+// true ONLY when we have a definite reading below the threshold.
+//
+// We FAIL-OPEN on -Infinity / NaN: ffmpeg may legitimately fail to
+// decode (network blip, ACL issue on the bucket, exotic codec we don't
+// expect). A genuinely silent file would still pass through, but that's
+// the lesser evil - we can't false-reject every submission whenever
+// ffmpeg has a bad day. The honor system catches dedicated griefers
+// via the abandon path anyway (no submission = honor penalty).
 export function isSilent(rmsDbFs: number, thresholdDbFs = -50): boolean {
-  if (!Number.isFinite(rmsDbFs)) return true; // total silence
+  if (!Number.isFinite(rmsDbFs)) return false; // fail-open
   return rmsDbFs < thresholdDbFs;
 }
