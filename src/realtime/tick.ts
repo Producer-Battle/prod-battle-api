@@ -368,6 +368,57 @@ export async function staleMatchSweep(): Promise<void> {
   }
 }
 
+// Throttle the grace scan to once per 30s. The 1s tick is overkill for
+// abandon detection and one slow scan starves the rest of the loop.
+let lastGraceAt = 0;
+
+/**
+ * Scan active matches for players whose Redis presence key has expired.
+ * Mark them abandoned via markPlayerAbandoned which applies the mode's
+ * `_mid` honor penalty and is idempotent (won't double-apply).
+ *
+ * Active matches = matches.status IN ('lobby','submit','vote'). Spectators
+ * and players already flagged abandoned are skipped at the outer query.
+ */
+async function graceCheck(): Promise<void> {
+  const now = Date.now();
+  if (now - lastGraceAt < 30_000) return;
+  lastGraceAt = now;
+
+  const d = db();
+  const rows = await d.execute<{
+    match_id: string;
+    user_id: string;
+    mode: string;
+  }>(
+    sql`SELECT mp.match_id, mp.user_id, m.mode
+          FROM match_players mp
+          JOIN matches m ON m.id = mp.match_id
+         WHERE m.status IN ('lobby','submit','vote')
+           AND mp.is_spectator = false
+           AND mp.abandoned = false
+           AND mp.honor_delta = 0`,
+  );
+
+  if ((rows as Array<unknown>).length === 0) return;
+
+  // Lazy-load the helpers - top-level import would create a cycle since
+  // honor/outcomes.ts imports schema.ts which imports back through here.
+  const [{ isPresent }, { markPlayerAbandoned }] = await Promise.all([
+    import('../presence/index.js'),
+    import('../honor/outcomes.js'),
+  ]);
+
+  for (const row of rows as Array<{ match_id: string; user_id: string; mode: string }>) {
+    const present = await isPresent(row.match_id, row.user_id);
+    if (present) continue;
+    await markPlayerAbandoned(row.match_id, row.user_id, row.mode).catch((err: Error) =>
+      console.error('[grace] markPlayerAbandoned failed:', err.message),
+    );
+    console.log(`[grace] ${row.match_id}: ${row.user_id} marked abandoned`);
+  }
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -383,6 +434,7 @@ export function startTickLoop(): () => void {
         console.error('[tick] daily rollover error:', err.message),
       );
       staleMatchSweep().catch((err: Error) => console.error('[sweep] error:', err.message));
+      graceCheck().catch((err: Error) => console.error('[grace] error:', err.message));
     }, 1000);
   });
 

@@ -9,6 +9,7 @@ import {
   matchTeams,
   matches,
   samplePacks,
+  users,
 } from '../db/schema.js';
 import { generateMatchPack } from '../genres/generate.js';
 import {
@@ -175,6 +176,44 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       },
       401,
     );
+  }
+
+  // Honor gates: low-honor users are locked out of competitive modes.
+  // Thresholds are admin-tunable via game_rules.honor.gates.
+  if (c.var.user) {
+    const { getCategory } = await import('../game-rules/loader.js');
+    const honorRules = await getCategory('honor');
+    const [userRow] = await d
+      .select({ honor: users.honor })
+      .from(users)
+      .where(eq(users.id, c.var.user.id))
+      .limit(1);
+    const currentHonor = userRow?.honor ?? honorRules.start;
+
+    let gateThreshold: number | null = null;
+    let gateLabel = '';
+    if (currentHonor < honorRules.gates.readOnlyBelow) {
+      gateThreshold = honorRules.gates.readOnlyBelow;
+      gateLabel = 'creating any match';
+    } else if (body.mode === 'tournament' && currentHonor < honorRules.gates.tournament) {
+      gateThreshold = honorRules.gates.tournament;
+      gateLabel = 'tournament';
+    } else if (body.mode === 'ranked' && currentHonor < honorRules.gates.ranked) {
+      gateThreshold = honorRules.gates.ranked;
+      gateLabel = 'ranked';
+    } else if (body.mode === 'private' && currentHonor < honorRules.gates.privateHosting) {
+      gateThreshold = honorRules.gates.privateHosting;
+      gateLabel = 'private room hosting';
+    }
+    if (gateThreshold !== null) {
+      return c.json(
+        {
+          error: 'low_honor',
+          message: `Honor too low for ${gateLabel}. You have ${currentHonor}, need ${gateThreshold}. Play some clean matches to recover.`,
+        },
+        403,
+      );
+    }
   }
 
   // ─── Matchmaking (Quick Play / Ranked) ──────────────────────────────────

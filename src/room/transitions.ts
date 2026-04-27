@@ -146,6 +146,15 @@ export async function computeVoteDuration(
 export async function onEnterPhase(matchId: string, phase: Phase): Promise<void> {
   if (phase === 'results') {
     await tallyResults(matchId);
+    // Honor accounting: regen for clean completers, abandon-penalty for
+    // anyone who failed to submit. Must run AFTER tallyResults so the
+    // submission set is final. Lazy-imported to avoid a cycle (honor
+    // module imports schema which (transitively) imports back through
+    // transitions.ts during compile).
+    const { applyMatchOutcome } = await import('../honor/outcomes.js');
+    await applyMatchOutcome(matchId).catch((err: Error) =>
+      console.error('[outcome] applyMatchOutcome failed:', err.message),
+    );
   }
   // submit/vote currently need no side effects here.
 }
