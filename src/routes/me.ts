@@ -650,6 +650,15 @@ const PublicSubmission = z.object({
   createdAt: z.string(),
 });
 
+const PublicTierRow = z.object({
+  genreSlug: z.string(),
+  genreName: z.string(),
+  lp: z.number().int(),
+  tier: z.string(),
+  wins: z.number().int(),
+  losses: z.number().int(),
+});
+
 const PublicProfileResponse = z
   .object({
     handle: z.string(),
@@ -658,6 +667,16 @@ const PublicProfileResponse = z
     bio: z.string().nullable(),
     socialLinks: z.record(z.string(), z.string()),
     createdAt: z.string(),
+    // Public game stats. Honor is exposed as a 0-5 star count (not the
+    // raw number) to read as reputation rather than judgement.
+    honorStars: z.number().int().min(0).max(5),
+    calibrating: z.boolean(),
+    rankedTiers: z.array(PublicTierRow),
+    stats: z.object({
+      wins: z.number().int(),
+      matches: z.number().int(),
+      streakDays: z.number().int(),
+    }),
     recentSubmissions: z.array(PublicSubmission),
   })
   .openapi('PublicProfileResponse');
@@ -692,6 +711,8 @@ meRoutes.openapi(getUserRoute, async (c) => {
       avatarUrl: users.avatarUrl,
       status: users.status,
       createdAt: users.createdAt,
+      honor: users.honor,
+      calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -736,6 +757,81 @@ meRoutes.openapi(getUserRoute, async (c) => {
     })),
   );
 
+  // Honor mapped to a 0-5 star count so the public profile reads as
+  // reputation, not a number. 100 -> 5 stars, 80 -> 4, etc.
+  const honorStars = Math.max(0, Math.min(5, Math.floor(row.honor / 20)));
+  const calibrating = row.calibrationMatchesRemaining > 0;
+
+  // Per-genre tier display - same logic as /me but skipped during
+  // calibration.
+  type TierLike = {
+    genreSlug: string;
+    genreName: string;
+    lp: number;
+    tier: string;
+    wins: number;
+    losses: number;
+  };
+  let rankedTiers: TierLike[] = [];
+  if (!calibrating) {
+    const { activeSeason } = await import('../game-rules/loader.js');
+    const { glickoToTier } = await import('../tiers/index.js');
+    const season = await activeSeason().catch(() => null);
+    if (season) {
+      const tierRows = await d.execute<{
+        genre_slug: string;
+        genre_name: string;
+        rating: string;
+        wins: number;
+        losses: number;
+      }>(
+        sql`SELECT g.slug AS genre_slug, g.name AS genre_name,
+                   r.glicko_rating::text AS rating, r.wins, r.losses
+              FROM rankings r
+              JOIN genres g ON g.id = r.genre_id
+             WHERE r.user_id = ${row.id} AND r.season_id = ${season.id}
+             ORDER BY r.glicko_rating DESC`,
+      );
+      const arr = tierRows as Array<{
+        genre_slug: string;
+        genre_name: string;
+        rating: string;
+        wins: number;
+        losses: number;
+      }>;
+      rankedTiers = await Promise.all(
+        arr.map(async (rr) => {
+          const tier = await glickoToTier(Number(rr.rating));
+          return {
+            genreSlug: rr.genre_slug,
+            genreName: rr.genre_name,
+            lp: tier.lp,
+            tier: tier.label,
+            wins: Number(rr.wins),
+            losses: Number(rr.losses),
+          };
+        }),
+      );
+    }
+  }
+
+  // Match-level stats. matches = distinct match ids the user submitted in;
+  // wins = submissions with final_rank=1; streakDays computed from the
+  // longest run of consecutive UTC days they completed at least one
+  // non-abandoned match. Approximated client-side too for consistency.
+  const [matchStats] = await d.execute<{
+    matches: string;
+    wins: string;
+    streak: string;
+  }>(
+    sql`SELECT
+          COUNT(DISTINCT s.match_id)::text AS matches,
+          COUNT(*) FILTER (WHERE s.final_rank = 1)::text AS wins,
+          0::text AS streak
+        FROM submissions s
+        WHERE s.user_id = ${row.id}`,
+  );
+
   return c.json({
     handle: row.handle,
     avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
@@ -743,6 +839,14 @@ meRoutes.openapi(getUserRoute, async (c) => {
     bio: row.bio ?? null,
     socialLinks: row.socialLinks ?? {},
     createdAt: row.createdAt.toISOString(),
+    honorStars,
+    calibrating,
+    rankedTiers,
+    stats: {
+      wins: Number(matchStats?.wins ?? 0),
+      matches: Number(matchStats?.matches ?? 0),
+      streakDays: Number(matchStats?.streak ?? 0),
+    },
     recentSubmissions,
   });
 });
