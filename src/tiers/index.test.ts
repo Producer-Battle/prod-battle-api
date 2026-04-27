@@ -2,8 +2,8 @@
 // object directly to glickoToTier(rules).
 
 import { describe, expect, it } from 'vitest';
-import { glickoToTier } from './index.js';
 import type { TierRules } from '../game-rules/types.js';
+import { glickoToTier } from './index.js';
 
 const RULES: TierRules = {
   calibrationMatches: 10,

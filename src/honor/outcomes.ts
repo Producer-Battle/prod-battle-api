@@ -76,6 +76,13 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
           honor: sql`LEAST(${users.honor} + ${honorRules.regenPerCleanDay}, ${honorRules.max})`,
         })
         .where(eq(users.id, p.userId));
+      // Achievements: lifetime match counts, genre mastery, tier promotion,
+      // remix master line. Lazy import to avoid a cycle (achievements ->
+      // tiers -> game-rules -> here).
+      const { evaluateMatchEndAchievements } = await import('../achievements/award.js');
+      await evaluateMatchEndAchievements(p.userId, m.mode).catch(() => {
+        /* silent */
+      });
     } else {
       // No submission and not yet flagged: late-stage abandon (failed to
       // submit). Apply the "_empty" penalty for this mode.
