@@ -67,6 +67,21 @@ const MeResponse = z
       totalSubmissions: z.number().int(),
       bestRank: z.number().int().nullable(),
     }),
+    // Honor + calibration state, surfaced on every /me poll so the frontend
+    // can show "calibrating (N matches left)" and "Honor: ★★★★★".
+    honor: z.number().int(),
+    calibrationMatchesRemaining: z.number().int(),
+    // Per-genre ranked tier display. Empty during calibration.
+    rankedTiers: z.array(
+      z.object({
+        genreSlug: z.string(),
+        genreName: z.string(),
+        lp: z.number().int(),
+        tier: z.string(),
+        wins: z.number().int(),
+        losses: z.number().int(),
+      }),
+    ),
   })
   .openapi('MeResponse');
 
@@ -100,6 +115,8 @@ meRoutes.openapi(getMeRoute, async (c) => {
       status: users.status,
       avatarUrl: users.avatarUrl,
       createdAt: users.createdAt,
+      honor: users.honor,
+      calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -123,6 +140,60 @@ meRoutes.openapi(getMeRoute, async (c) => {
         WHERE s.user_id = ${user.id}`,
   );
 
+  // Per-genre tier display - one row per ranked genre the user has played
+  // this season. Hidden during calibration to avoid fixating on a half-
+  // formed estimate.
+  type TierLike = {
+    genreSlug: string;
+    genreName: string;
+    lp: number;
+    tier: string;
+    wins: number;
+    losses: number;
+  };
+  let rankedTiers: TierLike[] = [];
+  if (row.calibrationMatchesRemaining === 0) {
+    const { activeSeason } = await import('../game-rules/loader.js');
+    const { glickoToTier } = await import('../tiers/index.js');
+    const season = await activeSeason().catch(() => null);
+    if (season) {
+      const tierRows = await d.execute<{
+        genre_slug: string;
+        genre_name: string;
+        rating: string;
+        wins: number;
+        losses: number;
+      }>(
+        sql`SELECT g.slug AS genre_slug, g.name AS genre_name,
+                   r.glicko_rating::text AS rating, r.wins, r.losses
+              FROM rankings r
+              JOIN genres g ON g.id = r.genre_id
+             WHERE r.user_id = ${user.id} AND r.season_id = ${season.id}
+             ORDER BY r.glicko_rating DESC`,
+      );
+      const arr = tierRows as Array<{
+        genre_slug: string;
+        genre_name: string;
+        rating: string;
+        wins: number;
+        losses: number;
+      }>;
+      rankedTiers = await Promise.all(
+        arr.map(async (rr) => {
+          const tier = await glickoToTier(Number(rr.rating));
+          return {
+            genreSlug: rr.genre_slug,
+            genreName: rr.genre_name,
+            lp: tier.lp,
+            tier: tier.label,
+            wins: Number(rr.wins),
+            losses: Number(rr.losses),
+          };
+        }),
+      );
+    }
+  }
+
   return c.json(
     {
       id: row.id,
@@ -140,6 +211,9 @@ meRoutes.openapi(getMeRoute, async (c) => {
         totalSubmissions: Number(stats?.total_submissions ?? 0),
         bestRank: stats?.best_rank != null ? Number(stats.best_rank) : null,
       },
+      honor: row.honor,
+      calibrationMatchesRemaining: row.calibrationMatchesRemaining,
+      rankedTiers,
     },
     200,
   );

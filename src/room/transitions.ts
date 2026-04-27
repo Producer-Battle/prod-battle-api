@@ -155,6 +155,11 @@ export async function onEnterPhase(matchId: string, phase: Phase): Promise<void>
     await applyMatchOutcome(matchId).catch((err: Error) =>
       console.error('[outcome] applyMatchOutcome failed:', err.message),
     );
+    // Ranked rating + LP + calibration update. No-op for non-ranked modes.
+    const { applyRankedOutcome } = await import('../tiers/ranked-outcome.js');
+    await applyRankedOutcome(matchId).catch((err: Error) =>
+      console.error('[outcome] applyRankedOutcome failed:', err.message),
+    );
   }
   // submit/vote currently need no side effects here.
 }
