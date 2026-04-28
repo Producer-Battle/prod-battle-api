@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm';
 import { db as getDb } from '../db/client.js';
 import * as schema from '../db/schema.js';
 import { env } from '../env.js';
+import { sendEmail } from '../mail/send.js';
 
 const googleConfigured = Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
 
@@ -70,34 +71,14 @@ export const auth = betterAuth({
       // client's `redirectTo` (see /auth/request-password-reset). When the
       // user clicks, the API validates the token and 302s to that callback
       // (our /auth/reset-password page) with the token still attached.
-      const finalUrl = url;
-
-      const nodemailer = await import('nodemailer');
-      const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
-      const transport = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        logger: process.env.SMTP_DEBUG === '1',
-        debug: process.env.SMTP_DEBUG === '1',
-        connectionTimeout: 30000,
-        greetingTimeout: 30000,
-        socketTimeout: 30000,
-        auth: process.env.SMTP_USER
-          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-          : undefined,
+      void sendEmail({
+        to: user.email,
+        subject: 'Reset your Producer Battle password',
+        text: `Someone (probably you) asked to reset your Producer Battle password. Open this link within an hour to choose a new one: ${url}\n\nIf you didn't request this, you can ignore this email.`,
+        html: `<p>Someone (probably you) asked to reset your Producer Battle password.</p><p><a href="${url}">Choose a new password</a> (link expires in 1 hour).</p><p>If you didn't request this, you can ignore this email.</p>`,
+      }).catch((err: Error) => {
+        console.warn('[auth] sendResetPassword mail failed:', err.message);
       });
-      void transport
-        .sendMail({
-          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
-          to: user.email,
-          subject: 'Reset your Producer Battle password',
-          text: `Someone (probably you) asked to reset your Producer Battle password. Open this link within an hour to choose a new one: ${finalUrl}\n\nIf you didn't request this, you can ignore this email.`,
-          html: `<p>Someone (probably you) asked to reset your Producer Battle password.</p><p><a href="${finalUrl}">Choose a new password</a> (link expires in 1 hour).</p><p>If you didn't request this, you can ignore this email.</p>`,
-        })
-        .catch((err: Error) => {
-          console.warn('[auth] sendResetPassword mail failed:', err.message);
-        });
     },
     resetPasswordTokenExpiresIn: 60 * 60, // 1h reset window
     // Clicking a reset link sent to the registered email is proof of email
@@ -117,48 +98,23 @@ export const auth = betterAuth({
       }
     },
     onExistingUserSignUp: async ({ user }) => {
-      try {
-        const candidates = (env.WEB_ORIGIN ?? 'http://localhost:5173')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const webOrigin =
-          candidates.find((c) => c.startsWith('https://') && !c.includes('*')) ??
-          candidates[0] ??
-          'http://localhost:5173';
-        const signInUrl = `${webOrigin}/auth/sign-in`;
-        const nodemailer = await import('nodemailer');
-        const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
-        const transport = nodemailer.createTransport({
-          host: process.env.SMTP_HOST,
-          port: smtpPort,
-          // Port 465 = SMTPS (TLS-on-connect). Anything else uses plain
-          // STARTTLS (587) or unencrypted (1025 dev mailpit).
-          secure: smtpPort === 465,
-          logger: process.env.SMTP_DEBUG === '1',
-          debug: process.env.SMTP_DEBUG === '1',
-          connectionTimeout: 30000,
-          greetingTimeout: 30000,
-          socketTimeout: 30000,
-          auth: process.env.SMTP_USER
-            ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-            : undefined,
-        });
-        // Fire-and-forget: signup must not hang on a slow SMTP path.
-        void transport
-          .sendMail({
-            from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
-            to: user.email,
-            subject: 'You already have a Producer Battle account',
-            text: `Someone (probably you) tried to sign up with this email. You already have an account - sign in here: ${signInUrl}`,
-            html: `<p>Someone (probably you) tried to sign up with this email.</p><p>You already have an account: <a href="${signInUrl}">sign in</a>.</p>`,
-          })
-          .catch((err: Error) => {
-            console.warn('[auth] onExistingUserSignUp mail failed:', err.message);
-          });
-      } catch (err) {
-        console.warn('[auth] onExistingUserSignUp setup failed:', (err as Error).message);
-      }
+      const candidates = (env.WEB_ORIGIN ?? 'http://localhost:5173')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const webOrigin =
+        candidates.find((c) => c.startsWith('https://') && !c.includes('*')) ??
+        candidates[0] ??
+        'http://localhost:5173';
+      const signInUrl = `${webOrigin}/auth/sign-in`;
+      void sendEmail({
+        to: user.email,
+        subject: 'You already have a Producer Battle account',
+        text: `Someone (probably you) tried to sign up with this email. You already have an account - sign in here: ${signInUrl}`,
+        html: `<p>Someone (probably you) tried to sign up with this email.</p><p>You already have an account: <a href="${signInUrl}">sign in</a>.</p>`,
+      }).catch((err: Error) => {
+        console.warn('[auth] onExistingUserSignUp mail failed:', err.message);
+      });
     },
   },
 
@@ -182,40 +138,14 @@ export const auth = betterAuth({
       verifyUrl.searchParams.set('callbackURL', `${webOrigin}/auth/sign-in?verified=1`);
       const finalUrl = verifyUrl.toString();
 
-      // Use nodemailer via SMTP. The compose stack runs mailpit on :1025
-      // in dev; prod uses Mailu via SMTPS on port 465. Tight connection
-      // timeouts so signup never hangs on a slow / blocked SMTP path -
-      // we'd rather the user see "check your email" and the mail be
-      // late or lost than the request never return.
-      const nodemailer = await import('nodemailer');
-      const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
-      const transport = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: smtpPort,
-        // 465 = SMTPS (TLS-on-connect). Other ports use plain or STARTTLS.
-        secure: smtpPort === 465,
-        logger: process.env.SMTP_DEBUG === '1',
-        debug: process.env.SMTP_DEBUG === '1',
-        connectionTimeout: 30000,
-        greetingTimeout: 30000,
-        socketTimeout: 30000,
-        auth: process.env.SMTP_USER
-          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-          : undefined,
+      void sendEmail({
+        to: user.email,
+        subject: 'Confirm your Producer Battle account',
+        text: `Welcome to Producer Battle. Confirm your email: ${finalUrl}`,
+        html: `<p>Welcome to Producer Battle.</p><p><a href="${finalUrl}">Confirm your email</a></p>`,
+      }).catch((err: Error) => {
+        console.warn('[auth] verifyEmail mail failed:', err.message);
       });
-      // Fire-and-forget: better-auth's contract is async but it doesn't
-      // care about the result; surface failures as a log instead.
-      void transport
-        .sendMail({
-          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
-          to: user.email,
-          subject: 'Confirm your Producer Battle account',
-          text: `Welcome to Producer Battle. Confirm your email: ${finalUrl}`,
-          html: `<p>Welcome to Producer Battle.</p><p><a href="${finalUrl}">Confirm your email</a></p>`,
-        })
-        .catch((err: Error) => {
-          console.warn('[auth] verifyEmail mail failed:', err.message);
-        });
     },
     sendOnSignUp: true,
     expiresIn: 60 * 60 * 24, // 24h verification window
