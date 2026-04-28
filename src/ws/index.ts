@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import { db } from '../db/client.js';
 import { matchPlayers, matchTeams, matches } from '../db/schema.js';
 import { publish } from '../realtime/pubsub.js';
+import { handlePresenceConnection } from './presence.js';
 import { MatchSession } from './room.js';
 
 /** Parse the URL path to extract the room code from /ws/match/:code */
@@ -166,6 +167,15 @@ export function attachWebSocket(server: Server): void {
 
   server.on('upgrade', (req: IncomingMessage, socket, head) => {
     const { url } = req;
+
+    // Site-wide presence channel (no room). Used by the header LIVE pill.
+    if (url?.startsWith('/ws/presence')) {
+      wss.handleUpgrade(req, socket, head, async (ws) => {
+        await handlePresenceConnection(ws, req);
+      });
+      return;
+    }
+
     const code = parseRoomCode(url);
     if (!code) {
       socket.destroy();
