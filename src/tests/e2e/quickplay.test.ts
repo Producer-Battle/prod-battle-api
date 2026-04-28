@@ -36,7 +36,7 @@ describe('mode: quickplay', () => {
     expect(match.samplePack).not.toBeNull();
     expect(match.genre.slug).toBe(TEST_GENRE_SLUG);
 
-    // 4 players - quickplay's min-players gate.
+    // 4 players - exercises the full multi-player flow (gate is min 2).
     const [host, ...rest] = Array.from({ length: 4 }, (_, i) => uniqueHandle(`qp-${i}`));
     if (!host) throw new Error('handles[] empty');
     const handles = [host, ...rest];
@@ -78,7 +78,7 @@ describe('mode: quickplay', () => {
     expect(final.status).toBe('results');
   });
 
-  it('rejects /start with waiting_for_players when fewer than 4 are seated', async () => {
+  it('rejects /start with waiting_for_players when fewer than 2 are seated', async () => {
     const match = await createMatch(app, { mode: 'quickplay' });
     const host = uniqueHandle('qp-lonely');
     await joinRoom(app, match.roomCode, host);
@@ -91,7 +91,7 @@ describe('mode: quickplay', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string; seated: number; minPlayers: number };
     expect(body.error).toBe('waiting_for_players');
-    expect(body.minPlayers).toBe(4);
+    expect(body.minPlayers).toBe(2);
     expect(body.seated).toBe(1);
   });
 

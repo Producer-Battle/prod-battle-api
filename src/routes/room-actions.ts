@@ -174,7 +174,7 @@ roomActionsRoutes.post('/rooms/:code/ready', async (c) => {
 // If this many players are not seated after the initial lobby wait, the match
 // waits in 60-second increments up to a 5-minute ceiling, then starts anyway
 // with whoever is seated (option b - start with what you have at the ceiling).
-const QP_RANKED_MIN_PLAYERS = 4;
+const QP_RANKED_MIN_PLAYERS = 2;
 const QP_RANKED_LOBBY_CEILING_SEC = 5 * 60; // 5 minutes
 
 // ─── POST /rooms/:code/start ──────────────────────────────────────────────────
