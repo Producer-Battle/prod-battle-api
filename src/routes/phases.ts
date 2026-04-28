@@ -189,6 +189,38 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   // We just drop those votes and keep the rest.
   const ownSubmissionIds = new Set(subs.filter((s) => s.userId === u.id).map((s) => s.id));
 
+  // Build the voter's fingerprint identity set once.
+  // canvasHash + screenDims is the strongest device signal (userAgent drifts
+  // across browser updates; timezone can be spoofed cheaply).
+  const voterFps = new Set(
+    (u.deviceFingerprints ?? []).map((f) => `${f.canvasHash}|${f.screenDims}`),
+  );
+
+  // Batch-load device fingerprints for all submitters in this match.
+  // Keyed by submitter userId -> Set<"canvasHash|screenDims">.
+  const submitterUserIds = [...new Set(subs.map((s) => s.userId).filter(Boolean))];
+  const submitterFpMap = new Map<string, Set<string>>();
+  if (submitterUserIds.length > 0) {
+    const submitterRows = await d.execute<{
+      id: string;
+      device_fingerprints: Array<{ canvasHash: string; screenDims: string }> | null;
+    }>(sql`SELECT id, device_fingerprints FROM users WHERE id = ANY(${submitterUserIds})`);
+    for (const row of submitterRows as Array<{
+      id: string;
+      device_fingerprints: Array<{ canvasHash: string; screenDims: string }> | null;
+    }>) {
+      const fpSet = new Set<string>(
+        (row.device_fingerprints ?? []).map((f) => `${f.canvasHash}|${f.screenDims}`),
+      );
+      submitterFpMap.set(row.id, fpSet);
+    }
+  }
+
+  // Velocity cap: maximum votes a single submission may receive within a
+  // rolling 1-hour window. Configurable via
+  // game_rules.voting.velocityCapPerSubmissionPerHour. 0 = no cap.
+  const velocityCap = votingRules.velocityCapPerSubmissionPerHour;
+
   // Apply honor + premium multiplier to the raw 1-5 score before storing.
   const isPremium = u.plan === 'paid';
   const weightFor = (rawScore: number): number =>
@@ -198,7 +230,48 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   for (const v of body.votes) {
     const s = subById.get(v.submissionId);
     if (!s) continue; // bad id - ignore
-    if (ownSubmissionIds.has(v.submissionId)) continue; // silent drop
+    if (ownSubmissionIds.has(v.submissionId)) continue; // self-vote silent drop
+
+    // Fingerprint collision check: if the voter shares a device signature
+    // with the submitter, drop the vote silently (sock-puppet upvote guard).
+    if (voterFps.size > 0 && s.userId) {
+      const submitterFps = submitterFpMap.get(s.userId) ?? new Set<string>();
+      let collision = false;
+      for (const fp of voterFps) {
+        if (submitterFps.has(fp)) {
+          collision = true;
+          break;
+        }
+      }
+      if (collision) {
+        console.warn('[vote] dropped fp-collision', {
+          matchId: m.id,
+          voterId: u.id,
+          submissionId: v.submissionId,
+        });
+        continue; // silent drop
+      }
+    }
+
+    // Velocity cap: count votes already cast on this submission in the
+    // trailing hour. Drop this vote if already at the cap.
+    if (velocityCap > 0) {
+      const [capRow] = await d.execute<{ n: string }>(
+        sql`SELECT COUNT(*)::text AS n
+              FROM votes
+             WHERE submission_id = ${v.submissionId}
+               AND created_at > now() - interval '1 hour'`,
+      );
+      const currentCount = Number((capRow as { n: string } | undefined)?.n ?? 0);
+      if (currentCount >= velocityCap) {
+        console.warn('[vote] velocity cap hit', {
+          matchId: m.id,
+          submissionId: v.submissionId,
+          cap: velocityCap,
+        });
+        continue; // silent drop
+      }
+    }
 
     // Upsert (match, voter, submission) with the weighted score.
     const weight = weightFor(v.score);

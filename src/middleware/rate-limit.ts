@@ -14,6 +14,7 @@
 // key migrations are needed - the new limit applies to keys created after the
 // deploy; existing keys expire within 24 h at most.
 
+import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import Redis from 'ioredis';
 import { env } from '../env.js';
@@ -201,3 +202,106 @@ export function requireProducerQuota(kind: ProducerQuotaKind) {
     await next();
   });
 }
+
+// ─── Sign-up rate-limit ───────────────────────────────────────────────────────
+//
+// Guards /auth/sign-up/email (and OAuth sign-up paths) against account-farm
+// bots. Two independent limits enforced in parallel:
+//
+//   - Per device fingerprint (X-Pb-Fp header, SHA-256 hashed):
+//       signup:fp:<sha256>  INCR / EXPIRE 86400  - max 3 per day
+//   - Per IP (/24 bucket, SHA-256 hashed - looser to accommodate NAT):
+//       signup:ip:<sha256>  INCR / EXPIRE 86400  - max 10 per day
+//
+// If the X-Pb-Fp header is absent (older clients, native apps, etc.) only
+// the IP check fires. Either limit can reject with 429.
+//
+// Fail-open: Redis errors are logged and the request is let through so a
+// Redis restart never hard-blocks legitimate signups.
+//
+// Web-side integration note: the web client should send the thumbmark hash
+// in the X-Pb-Fp header on the sign-up request. In
+// web/src/lib/auth.ts signUpEmail, add:
+//   headers: { 'x-pb-fp': await deviceId() }
+
+export const SIGNUP_FP_LIMIT = 3;
+export const SIGNUP_IP_LIMIT = 10;
+
+function sha256hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+/**
+ * Extract a best-effort /24 IP bucket from a raw IP string.
+ * Returns the full IP if parsing fails (safe fallback - a tighter bucket).
+ */
+function ipBucket(rawIp: string): string {
+  // Strip IPv6 brackets / port suffixes.
+  const clean = rawIp.replace(/^\[|\]?(:\d+)?$/g, '').trim();
+  const m4 = clean.match(/^(\d+\.\d+\.\d+)\.\d+$/);
+  if (m4) return `${m4[1]}.0/24`;
+  // For IPv6 keep the full address (each /48 is already one org typically).
+  return clean;
+}
+
+/**
+ * Apply to the sign-up route(s) to rate-limit account creation by device
+ * fingerprint and source IP. Fail-open on Redis errors.
+ */
+export function requireSignupQuota() {
+  return createMiddleware(async (c, next) => {
+    const fpHeader = c.req.header('x-pb-fp');
+    const rawIp =
+      c.req.header('cf-connecting-ip') ??
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ??
+      c.req.header('x-real-ip') ??
+      '';
+
+    try {
+      const redis = getRedisClient();
+
+      // Per-device fingerprint check (optional - skip if header absent).
+      if (fpHeader && fpHeader.trim().length > 0) {
+        const fpKey = `signup:fp:${sha256hex(fpHeader.trim())}`;
+        const fpCount = await redis.incr(fpKey);
+        if (fpCount === 1) await redis.expire(fpKey, 86_400);
+        if (fpCount > SIGNUP_FP_LIMIT) {
+          return c.json(
+            {
+              error: 'too_many_signups',
+              message: 'Too many sign-ups from this device or network. Try again in 24h.',
+            },
+            429,
+          );
+        }
+      }
+
+      // Per-IP check (always fires when IP is available).
+      if (rawIp.length > 0) {
+        const ipKey = `signup:ip:${sha256hex(ipBucket(rawIp))}`;
+        const ipCount = await redis.incr(ipKey);
+        if (ipCount === 1) await redis.expire(ipKey, 86_400);
+        if (ipCount > SIGNUP_IP_LIMIT) {
+          return c.json(
+            {
+              error: 'too_many_signups',
+              message: 'Too many sign-ups from this device or network. Try again in 24h.',
+            },
+            429,
+          );
+        }
+      }
+    } catch (err) {
+      // Redis unavailable - fail-open.
+      console.warn(
+        '[signup-rl] redis unavailable, skipping signup rate limit:',
+        (err as Error).message,
+      );
+    }
+
+    await next();
+  });
+}
+
+// Re-export the client reset for signup rate-limit tests.
+export const _resetSignupRlForTest = _resetClientForTest;

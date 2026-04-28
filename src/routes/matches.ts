@@ -283,20 +283,39 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     // over those that are already at or above the minimum but still not full.
     // This batches new players into the same lobby rather than fragmenting.
     //
-    // Anti-smurf cluster guard: for ranked, drop any lobby that has a
-    // seated player sharing an IP cluster with the caller. Falls through
-    // to lobby-creation in that case, which is fine - the smurfer gets
-    // their own room until a non-cluster opponent shows up.
+    // Anti-smurf cluster guard: fires for all competitive PvP modes that
+    // produce a leaderboard (ranked, quickplay, flip, tournament). Practice
+    // and daily are excluded - practice is solo, daily is open audience.
+    //
+    // Behaviour by mode:
+    //   ranked    - hard block: collision lobbies are filtered out entirely
+    //   quickplay / flip / tournament - soft signal: lobby is skipped but
+    //     the collision is logged so ops can review patterns without
+    //     disrupting casual matchmaking.
+    const CLUSTER_HARD_MODES = new Set(['ranked']);
+    const CLUSTER_SOFT_MODES = new Set(['quickplay', 'flip', 'tournament']);
     type LobbyRow = (typeof openLobbies)[number];
     let candidates: LobbyRow[] = Array.from(openLobbies);
-    if (body.mode === 'ranked' && c.var.user) {
+    if (c.var.user && (CLUSTER_HARD_MODES.has(body.mode) || CLUSTER_SOFT_MODES.has(body.mode))) {
       const { isClusterMatch } = await import('../matchmaking/cluster-guard.js');
       const filtered: LobbyRow[] = [];
-      // Serial loop is fine: openLobbies is small (≤ a few rows in practice)
+      // Serial loop is fine: openLobbies is small (a few rows in practice)
       // and each isClusterMatch is one indexed query.
       for (const lobby of candidates) {
         const collision = await isClusterMatch(lobby.id, c.var.user.id);
-        if (!collision) filtered.push(lobby);
+        if (!collision) {
+          filtered.push(lobby);
+        } else if (CLUSTER_SOFT_MODES.has(body.mode)) {
+          // Soft signal: log and allow the lobby to be skipped. The caller
+          // may still get seated via a newly-created lobby below, but won't
+          // share a room with the colliding player from this lobby.
+          console.warn('[cluster-guard] soft collision', {
+            mode: body.mode,
+            matchId: lobby.id,
+            userId: c.var.user.id,
+          });
+        }
+        // Hard modes: collision lobby silently dropped (no filtered.push).
       }
       candidates = filtered;
     }

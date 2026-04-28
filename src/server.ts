@@ -6,6 +6,7 @@ import { auth } from './auth/config.js';
 import { env } from './env.js';
 import { startGenrePromotionLoop } from './genres/promote.js';
 import { anonId } from './middleware/anon-id.js';
+import { requireSignupQuota } from './middleware/rate-limit.js';
 import { attachSession } from './middleware/session.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
@@ -37,6 +38,13 @@ app.use(
     credentials: true,
   }),
 );
+
+// Sign-up rate-limit: guard account creation before the better-auth handler
+// sees the request. Fires on both the email/password and OAuth sign-up paths.
+// Fail-open when Redis is unavailable so a Redis restart never blocks signups.
+app.use('/auth/sign-up/*', requireSignupQuota());
+// Google OAuth callback also creates accounts - rate-limit the callback path.
+app.use('/auth/callback/*', requireSignupQuota());
 
 // better-auth mounts its entire surface area (/sign-in, /sign-up, /session,
 // /verify-email, OAuth callbacks, …) at this one handler. Must be
