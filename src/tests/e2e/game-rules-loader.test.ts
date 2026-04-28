@@ -13,7 +13,7 @@ describe('game-rules loader', () => {
     _resetCacheForTest();
   });
 
-  it('loads all six categories from the seed', async () => {
+  it('loads all five categories from the seed', async () => {
     const rules = await getRules();
     expect(rules.honor.start).toBe(100);
     expect(rules.honor.gates.ranked).toBe(50);
@@ -21,7 +21,6 @@ describe('game-rules loader', () => {
     expect(rules.tiers.boundaries).toHaveLength(7);
     // Test seed lowers this to 0 (production migration keeps it at 3).
     expect(rules.voting.minMatchesBeforeVotesCount).toBe(0);
-    expect(rules.revenue.creatorPoolPercentOfPremium).toBe(5);
     expect(rules.reconnect.graceSeconds).toBe(120);
     expect(rules.achievements.enabled.tier_grandmaster).toBe(true);
   });

@@ -17,7 +17,6 @@ import type {
   GameRulesCategory,
   HonorRules,
   ReconnectRules,
-  RevenueRules,
   TierRules,
   VotingRules,
 } from './types.js';
@@ -33,14 +32,7 @@ async function fetchAll(): Promise<GameRules> {
   const rows = await db().select().from(gameRules);
   const byCategory = new Map(rows.map((r) => [r.category, r.payload as unknown]));
 
-  const required: GameRulesCategory[] = [
-    'honor',
-    'tiers',
-    'voting',
-    'revenue',
-    'achievements',
-    'reconnect',
-  ];
+  const required: GameRulesCategory[] = ['honor', 'tiers', 'voting', 'achievements', 'reconnect'];
   for (const cat of required) {
     if (!byCategory.has(cat)) {
       throw new Error(
@@ -53,7 +45,6 @@ async function fetchAll(): Promise<GameRules> {
     honor: byCategory.get('honor') as HonorRules,
     tiers: byCategory.get('tiers') as TierRules,
     voting: byCategory.get('voting') as VotingRules,
-    revenue: byCategory.get('revenue') as RevenueRules,
     achievements: byCategory.get('achievements') as AchievementRules,
     reconnect: byCategory.get('reconnect') as ReconnectRules,
   };

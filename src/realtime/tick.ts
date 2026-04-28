@@ -730,79 +730,6 @@ async function voteRingScan(): Promise<void> {
   }
 }
 
-// Monthly creator payout snapshot. Once per UTC day we check whether
-// last calendar month has a creator_payouts row yet; if not, compute
-// the per-creator distribution and insert the rows. Distribution math
-// mirrors /admin/pack-payouts. Pool size is the configured percent of
-// premium revenue, but until billing wires that signal we conservatively
-// snapshot at $0 = below threshold so the rows still land for audit
-// (admin can edit amount_cents and mark as paid).
-let lastPayoutScanAt = 0;
-
-async function payoutMonthlyScan(): Promise<void> {
-  const now = Date.now();
-  // Once per hour. Cheap "is it last month yet?" check + skip if rows
-  // already exist.
-  if (now - lastPayoutScanAt < 3_600_000) return;
-  lastPayoutScanAt = now;
-
-  const d = db();
-  // Window: previous calendar month, UTC.
-  const today = new Date();
-  const periodEnd = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
-  const periodStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
-
-  // Already snapshotted this period?
-  const existing = await d.execute<{ n: string }>(
-    sql`SELECT COUNT(*)::text AS n FROM creator_payouts
-         WHERE period_start = ${periodStart.toISOString()}::timestamptz
-           AND period_end   = ${periodEnd.toISOString()}::timestamptz`,
-  );
-  if (Number((existing as Array<{ n: string }>)[0]?.n ?? 0) > 0) return;
-
-  const { getCategory } = await import('../game-rules/loader.js');
-  const revenue = await getCategory('revenue').catch(() => null);
-  if (!revenue) return;
-
-  // Per-creator play counts in the window. Mirrors admin-payouts.ts.
-  const rows = await d.execute<{ creator_id: string; plays: string }>(
-    sql`SELECT sp.created_by AS creator_id, COUNT(*)::text AS plays
-          FROM pack_plays pp
-          JOIN sample_packs sp ON sp.id = pp.pack_id
-         WHERE sp.kind = 'pool'
-           AND sp.created_by IS NOT NULL
-           AND pp.played_at >= ${periodStart.toISOString()}::timestamptz
-           AND pp.played_at <  ${periodEnd.toISOString()}::timestamptz
-         GROUP BY sp.created_by`,
-  );
-  const arr = rows as Array<{ creator_id: string; plays: string }>;
-  if (arr.length === 0) return;
-
-  const totalPlays = arr.reduce((acc, r) => acc + Number(r.plays), 0);
-  // poolCents = 0 until billing flows real revenue. Each row still gets
-  // a 'pending' record so payouts have a paper trail; admin can edit
-  // amount_cents once the period's revenue is known.
-  const poolCents = 0;
-
-  for (const r of arr) {
-    const plays = Number(r.plays);
-    const share = totalPlays > 0 ? plays / totalPlays : 0;
-    const amountCents = Math.floor(poolCents * share);
-    const status = amountCents < revenue.minPayoutThresholdCents ? 'rolled' : 'pending';
-    await d.execute(
-      sql`INSERT INTO creator_payouts
-            (creator_id, period_start, period_end, plays, amount_cents, status)
-            VALUES (${r.creator_id},
-                    ${periodStart.toISOString()}::timestamptz,
-                    ${periodEnd.toISOString()}::timestamptz,
-                    ${plays}, ${amountCents}, ${status})`,
-    );
-  }
-  console.log(
-    `[payout] snapshot for ${periodStart.toISOString().slice(0, 10)}: ${arr.length} creators, ${totalPlays} plays`,
-  );
-}
-
 // Tournament scheduling. Two responsibilities, both fire from the same
 // scan:
 //   1. Registration locks: tournaments with status='open' whose
@@ -1094,7 +1021,6 @@ export function startTickLoop(): () => void {
         console.error('[soft-reset] error:', err.message),
       );
       voteRingScan().catch((err: Error) => console.error('[vote-ring] error:', err.message));
-      payoutMonthlyScan().catch((err: Error) => console.error('[payout] error:', err.message));
       tournamentScheduleScan().catch((err: Error) =>
         console.error('[tournament-sched] error:', err.message),
       );

@@ -97,13 +97,6 @@ export const users = pgTable(
     // grace period. Logging in during the grace clears it; the cron sweep
     // hard-deletes after grace expires.
     deletedAt: timestamp({ withTimezone: true }),
-    // Creator-payout preferences: email + IBAN string. We don't keep
-    // bank details encrypted in-app - the admin payout dashboard
-    // exports these for manual SEPA transfer or future Mollie Connect.
-    // Empty string = creator has no preference set yet (revenue rolls
-    // forward in their creator_payouts row).
-    payoutEmail: text(),
-    payoutIban: text(),
     // Lightweight browser fingerprint at signup - used as a cluster
     // signal alongside session.ipAddress in the anti-smurf guard.
     // Format: { canvasHash, screenDims, timezone, userAgent } - none
@@ -718,9 +711,8 @@ export const achievements = pgTable(
 
 /*
  * Pack plays - one row per match-start that consumed a sample pack.
- * Used to compute creator revenue share (5% of premium revenue
- * distributed monthly by play-share). Inserted by the match-create
- * handler after a pack is locked in. Cheap append-only ledger.
+ * Append-only ledger inserted by the match-create handler after a pack
+ * is locked in. Retained for analytics and future use.
  * ──────────────────────────────────────────────────────────────────────────
  */
 export const packPlays = pgTable('pack_plays', {
@@ -783,32 +775,6 @@ export const tournamentEntries = pgTable(
 );
 
 /*
- * Creator payouts - one row per (creator, period) for the pack
- * revenue share. Computed monthly from pack_plays + active premium
- * revenue (the revenue side is plumbed in admin-payouts.ts; this
- * table is the audit ledger of what's owed and what's been paid).
- *
- * status: 'pending' (computed, not paid), 'paid' (money moved),
- * 'rolled' (under threshold, rolled into next period), 'cancelled'
- * (admin overrode).
- * ──────────────────────────────────────────────────────────────────────────
- */
-export const creatorPayouts = pgTable('creator_payouts', {
-  id: uuid().primaryKey().defaultRandom(),
-  creatorId: uuid()
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  periodStart: timestamp({ withTimezone: true }).notNull(),
-  periodEnd: timestamp({ withTimezone: true }).notNull(),
-  plays: integer().notNull().default(0),
-  amountCents: integer().notNull().default(0),
-  status: text().notNull().default('pending'),
-  paidAt: timestamp({ withTimezone: true }),
-  externalRef: text(), // Mollie payment id when wired up
-  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-});
-
-/*
  * Reports - user-flagged content / behaviour. The admin moderation
  * queue drains this table. status='open' until an admin acts; on
  * resolution we record reviewedBy + reviewedAt + the action taken.
@@ -833,7 +799,7 @@ export const reports = pgTable('reports', {
 });
 
 /*
- * Game rules - admin-tunable knobs for honor / tiers / voting / revenue.
+ * Game rules - admin-tunable knobs for honor / tiers / voting.
  * One row per category. Payload is a JSONB blob with category-specific
  * keys. Loaded once at server start and cached in-process; admin writes
  * bump a version that triggers an in-process refresh via Redis pub/sub.
@@ -842,7 +808,6 @@ export const reports = pgTable('reports', {
  *   - 'honor'       : per-mode penalty + regen + gate values
  *   - 'tiers'       : LP boundaries + calibration count + soft-reset %
  *   - 'voting'      : min-matches gate + honor weight curve + velocity caps
- *   - 'revenue'     : creator pool % + payout threshold
  *   - 'achievements': enable/disable map per achievement key
  *
  * Hardcoded constants in src/middleware, src/honor, src/tiers etc. read

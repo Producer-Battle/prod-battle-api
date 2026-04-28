@@ -139,15 +139,6 @@ async function seedRulesAndSeasons(): Promise<void> {
       },
     },
     {
-      category: 'revenue',
-      payload: {
-        creatorPoolPercentOfPremium: 5,
-        minPayoutThresholdCents: 500,
-        rolloverIfBelow: true,
-        payoutCadenceDays: 30,
-      },
-    },
-    {
       category: 'achievements',
       payload: {
         enabled: { tier_grandmaster: true, daily_champion: true, match_streak_7: true },

@@ -2,7 +2,6 @@ import type { OpenAPIHono } from '@hono/zod-openapi';
 import { achievementsRoutes } from './achievements.js';
 import { adminFlipSourcesRoutes } from './admin-flip-sources.js';
 import { adminPacksRoutes } from './admin-packs.js';
-import { adminPayoutsRoutes } from './admin-payouts.js';
 import { adminRulesRoutes } from './admin-rules.js';
 import { adminRoutes } from './admin.js';
 import { arRoutes } from './ar.js';
@@ -41,7 +40,6 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', adminFlipSourcesRoutes);
   app.route('/', adminPacksRoutes);
   app.route('/', adminRulesRoutes);
-  app.route('/', adminPayoutsRoutes);
   app.route('/', flipSourcesRoutes);
   app.route('/', meRoutes);
   app.route('/', billingRoutes);

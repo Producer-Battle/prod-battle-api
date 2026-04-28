@@ -552,9 +552,8 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
       }
       // Link the pack back to the match.
       await d.update(matches).set({ samplePackId: pack.id }).where(eq(matches.id, match.id));
-      // Append-only ledger row for creator-revenue accounting. One row per
-      // (match, pack); cheap insert. Aggregator runs monthly out of
-      // /admin/pack-payouts.
+      // Append-only ledger row. One row per (match, pack); retained for
+      // analytics.
       await d
         .insert(packPlays)
         .values({ packId: pack.id, matchId: match.id })

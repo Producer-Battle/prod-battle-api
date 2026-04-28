@@ -1,9 +1,9 @@
 // Admin endpoints for the game_rules table. Lets a trusted operator tune
-// honor / tier / voting / revenue / achievement / reconnect knobs without
-// shipping code. Every category is a free-form JSON blob - the loader
-// types it on read; we accept any object on write and trust the admin to
-// pass valid shapes (with a TS-typed editor on the frontend the risk is
-// low). A future iteration can add per-category zod schemas.
+// honor / tier / voting / achievement / reconnect knobs without shipping
+// code. Every category is a free-form JSON blob - the loader types it on
+// read; we accept any object on write and trust the admin to pass valid
+// shapes (with a TS-typed editor on the frontend the risk is low).
+// A future iteration can add per-category zod schemas.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
@@ -15,7 +15,7 @@ export const adminRulesRoutes = new OpenAPIHono();
 
 const AdminError = z.object({ error: z.string(), message: z.string() });
 
-const CATEGORIES = ['honor', 'tiers', 'voting', 'revenue', 'achievements', 'reconnect'] as const;
+const CATEGORIES = ['honor', 'tiers', 'voting', 'achievements', 'reconnect'] as const;
 const CategoryEnum = z.enum(CATEGORIES);
 
 const requireAdmin = (

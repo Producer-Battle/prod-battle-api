@@ -88,8 +88,6 @@ const MeResponse = z
       packs: z.boolean(),
       achievements: z.boolean(),
     }),
-    payoutEmail: z.string().email().nullable(),
-    payoutIban: z.string().nullable(),
   })
   .openapi('MeResponse');
 
@@ -126,8 +124,6 @@ meRoutes.openapi(getMeRoute, async (c) => {
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       profileVisibility: users.profileVisibility,
-      payoutEmail: users.payoutEmail,
-      payoutIban: users.payoutIban,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -231,8 +227,6 @@ meRoutes.openapi(getMeRoute, async (c) => {
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
       },
-      payoutEmail: row.payoutEmail ?? null,
-      payoutIban: row.payoutIban ?? null,
     },
     200,
   );
@@ -257,10 +251,6 @@ const PatchMeBody = z
         achievements: z.boolean().optional(),
       })
       .optional(),
-    // Creator payout preferences. Set both for redundancy (admin
-    // settles via whichever channel works); empty string clears.
-    payoutEmail: z.string().email().nullable().optional(),
-    payoutIban: z.string().min(15).max(34).nullable().optional(),
   })
   .openapi('PatchMeBody');
 
@@ -294,12 +284,7 @@ meRoutes.openapi(patchMeRoute, async (c) => {
     handle?: string;
     avatarUrl?: string | null;
     profileVisibility?: Record<string, boolean>;
-    payoutEmail?: string | null;
-    payoutIban?: string | null;
   } = {};
-
-  if (body.payoutEmail !== undefined) updates.payoutEmail = body.payoutEmail;
-  if (body.payoutIban !== undefined) updates.payoutIban = body.payoutIban;
 
   if (body.profileVisibility !== undefined) {
     // Strip undefined values - jsonb column wants a clean object.
@@ -374,8 +359,6 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       profileVisibility: users.profileVisibility,
-      payoutEmail: users.payoutEmail,
-      payoutIban: users.payoutIban,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
     })
@@ -425,8 +408,6 @@ meRoutes.openapi(patchMeRoute, async (c) => {
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
       },
-      payoutEmail: row.payoutEmail ?? null,
-      payoutIban: row.payoutIban ?? null,
     },
     200,
   );

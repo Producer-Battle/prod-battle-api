@@ -66,13 +66,6 @@ export interface VotingRules {
   };
 }
 
-export interface RevenueRules {
-  creatorPoolPercentOfPremium: number;
-  minPayoutThresholdCents: number;
-  rolloverIfBelow: boolean;
-  payoutCadenceDays: number;
-}
-
 export interface AchievementRules {
   enabled: Record<string, boolean>;
 }
@@ -87,7 +80,6 @@ export interface GameRules {
   honor: HonorRules;
   tiers: TierRules;
   voting: VotingRules;
-  revenue: RevenueRules;
   achievements: AchievementRules;
   reconnect: ReconnectRules;
 }
