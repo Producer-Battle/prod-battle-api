@@ -18,6 +18,7 @@ import { phasesRoutes } from './phases.js';
 import { reportsRoutes } from './reports.js';
 import { roomActionsRoutes } from './room-actions.js';
 import { samplePacksRoutes } from './sample-packs.js';
+import { statsRoutes } from './stats.js';
 import { submissionsRoutes } from './submissions.js';
 import { tournamentScheduleRoutes } from './tournament-schedule.js';
 import { tournamentsRoutes } from './tournaments.js';
@@ -25,6 +26,7 @@ import { userPacksRoutes } from './user-packs.js';
 
 export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', healthRoutes);
+  app.route('/', statsRoutes);
   app.route('/', feedRoutes);
   app.route('/', genresRoutes);
   app.route('/', matchesRoutes);
