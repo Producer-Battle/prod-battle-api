@@ -78,9 +78,9 @@ export const auth = betterAuth({
         host: process.env.SMTP_HOST,
         port: smtpPort,
         secure: smtpPort === 465,
-        connectionTimeout: 5000,
-        greetingTimeout: 5000,
-        socketTimeout: 5000,
+        connectionTimeout: 30000,
+        greetingTimeout: 30000,
+        socketTimeout: 30000,
         auth: process.env.SMTP_USER
           ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
           : undefined,
@@ -133,9 +133,9 @@ export const auth = betterAuth({
           // Port 465 = SMTPS (TLS-on-connect). Anything else uses plain
           // STARTTLS (587) or unencrypted (1025 dev mailpit).
           secure: smtpPort === 465,
-          connectionTimeout: 5000,
-          greetingTimeout: 5000,
-          socketTimeout: 5000,
+          connectionTimeout: 30000,
+          greetingTimeout: 30000,
+          socketTimeout: 30000,
           auth: process.env.SMTP_USER
             ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
             : undefined,
@@ -190,9 +190,9 @@ export const auth = betterAuth({
         port: smtpPort,
         // 465 = SMTPS (TLS-on-connect). Other ports use plain or STARTTLS.
         secure: smtpPort === 465,
-        connectionTimeout: 5000,
-        greetingTimeout: 5000,
-        socketTimeout: 5000,
+        connectionTimeout: 30000,
+        greetingTimeout: 30000,
+        socketTimeout: 30000,
         auth: process.env.SMTP_USER
           ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
           : undefined,
