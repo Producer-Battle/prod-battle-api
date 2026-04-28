@@ -1,12 +1,17 @@
 // Discord supporter role sync - perk #2.
 //
-// When DISCORD_BOT_TOKEN, DISCORD_GUILD_ID, and DISCORD_SUPPORTER_ROLE_ID are
-// all set, syncSupporterRole() grants or revokes the supporter role in the
-// configured Discord server. If any env var is missing the function is a no-op
-// and logs once at process start.
+// STATUS: feature is COMPLETE on the code side but INTENTIONALLY DORMANT in
+// prod (as of 2026-04-28). The bot, guild, and role IDs are not set in
+// prod-battle-infra/.env, so the module logs once at startup and skips
+// every invocation. To activate later: create a Discord bot with
+// MANAGE_ROLES, invite to the guild, set the 3 TF_VAR_discord_* values,
+// `tofu apply`, and the next plan flip will start granting/revoking the
+// role. No code changes needed when reactivating.
 //
-// The function is best-effort: it logs on failure but never throws, so a
-// Discord outage does not affect billing or plan transitions.
+// When all three env vars ARE set, syncSupporterRole() grants or revokes
+// the supporter role in the configured Discord server. The function is
+// best-effort: it logs on failure but never throws, so a Discord outage
+// does not affect billing or plan transitions.
 
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
