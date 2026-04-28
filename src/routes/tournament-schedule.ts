@@ -1,16 +1,18 @@
 // Tournament scheduling endpoints. Lets users browse upcoming
-// tournaments, register, and admins create them. The actual bracket
-// pairing happens in src/realtime/tick.ts tournamentScheduleScan.
+// tournaments, register, and admins create/cancel them. The actual
+// bracket pairing happens in src/realtime/tick.ts tournamentScheduleScan.
 //
 // Routes:
 //   GET   /tournaments/upcoming                  list open + starting tournaments
+//   GET   /tournaments/past                      last 8 finished/cancelled tournaments
 //   GET   /tournaments/{id}                      tournament detail + entrants + matches
 //   POST  /tournaments                           admin: create
+//   DELETE /tournaments/{id}                     admin: cancel
 //   POST  /tournaments/{id}/register             user: enter
 //   DELETE /tournaments/{id}/register            user: withdraw before lock
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, desc, eq, gt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, lt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { genres, matches, tournamentEntries, tournaments, users } from '../db/schema.js';
 import { getCategory } from '../game-rules/loader.js';
@@ -87,6 +89,78 @@ tournamentScheduleRoutes.openapi(upcomingRoute, async (c) => {
          WHERE t.status IN ('open', 'starting', 'in_progress')
          ORDER BY t.starts_at ASC
          LIMIT 50`,
+  );
+  const arr = rows as Array<{
+    id: string;
+    name: string;
+    genre_slug: string;
+    genre_name: string;
+    starts_at: Date | string;
+    registration_closes_at: Date | string;
+    status: string;
+    max_entrants: number;
+    entrant_count: string;
+    is_registered: boolean;
+  }>;
+  return c.json(
+    {
+      items: arr.map((r) => ({
+        id: r.id,
+        name: r.name,
+        genreSlug: r.genre_slug,
+        genreName: r.genre_name,
+        startsAt: new Date(r.starts_at).toISOString(),
+        registrationClosesAt: new Date(r.registration_closes_at).toISOString(),
+        status: r.status as 'open' | 'starting' | 'in_progress' | 'finished' | 'cancelled',
+        maxEntrants: Number(r.max_entrants),
+        entrantCount: Number(r.entrant_count),
+        registered: !!r.is_registered,
+      })),
+    },
+    200,
+  );
+});
+
+// ─── GET /tournaments/past ─────────────────────────────────────────────────
+
+const pastRoute = createRoute({
+  method: 'get',
+  path: '/tournaments/past',
+  tags: ['tournaments'],
+  summary: 'Last 8 finished or cancelled tournaments (admin view)',
+  responses: {
+    200: {
+      description: 'Past tournaments',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(TournamentSummary) }) },
+      },
+    },
+  },
+});
+
+tournamentScheduleRoutes.openapi(pastRoute, async (c) => {
+  const callerId = c.var.user?.id ?? null;
+  const rows = await db().execute<{
+    id: string;
+    name: string;
+    genre_slug: string;
+    genre_name: string;
+    starts_at: Date | string;
+    registration_closes_at: Date | string;
+    status: string;
+    max_entrants: number;
+    entrant_count: string;
+    is_registered: boolean;
+  }>(
+    sql`SELECT t.id, t.name, g.slug AS genre_slug, g.name AS genre_name,
+               t.starts_at, t.registration_closes_at, t.status, t.max_entrants,
+               (SELECT COUNT(*)::text FROM tournament_entries te WHERE te.tournament_id = t.id) AS entrant_count,
+               (${callerId ? sql`EXISTS (SELECT 1 FROM tournament_entries te2 WHERE te2.tournament_id = t.id AND te2.user_id = ${callerId})` : sql`FALSE`}) AS is_registered
+          FROM tournaments t
+          JOIN genres g ON g.id = t.genre_id
+         WHERE t.status IN ('finished', 'cancelled')
+         ORDER BY t.starts_at DESC
+         LIMIT 8`,
   );
   const arr = rows as Array<{
     id: string;
@@ -242,6 +316,7 @@ const createBody = z.object({
   startsAt: z.string().datetime(),
   registrationClosesAt: z.string().datetime(),
   maxEntrants: z.number().int().min(2).max(64).optional().default(16),
+  submitSecondsOverride: z.number().int().min(60).max(7200).optional(),
 });
 
 const createRouteDef = createRoute({
@@ -288,11 +363,62 @@ tournamentScheduleRoutes.openapi(createRouteDef, async (c) => {
       startsAt: startsAtDate,
       registrationClosesAt: closesAtDate,
       maxEntrants: body.maxEntrants,
+      submitSecondsOverride: body.submitSecondsOverride ?? null,
       createdBy: user.id,
     })
     .returning({ id: tournaments.id });
   if (!row) return c.json({ error: 'create_failed', message: 'Could not create.' }, 400);
   return c.json({ id: row.id }, 201);
+});
+
+// ─── DELETE /tournaments/:id (admin cancel) ────────────────────────────────
+
+const cancelRouteDef = createRoute({
+  method: 'delete',
+  path: '/tournaments/{id}',
+  tags: ['tournaments'],
+  summary: 'Cancel a tournament (admin only). Idempotent.',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Cancelled',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: { description: 'Unauthenticated', content: { 'application/json': { schema: ErrorBody } } },
+    403: { description: 'Not an admin', content: { 'application/json': { schema: ErrorBody } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: ErrorBody } } },
+  },
+});
+
+tournamentScheduleRoutes.openapi(cancelRouteDef, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated', message: 'Sign in.' }, 401);
+  if (user.role !== 'admin')
+    return c.json({ error: 'forbidden', message: 'Admin role required.' }, 403);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [t] = await d
+    .select({ id: tournaments.id, status: tournaments.status })
+    .from(tournaments)
+    .where(eq(tournaments.id, id))
+    .limit(1);
+  if (!t) return c.json({ error: 'not_found', message: 'No such tournament.' }, 404);
+
+  // Idempotent: already cancelled/finished is fine.
+  if (t.status !== 'cancelled') {
+    await d.execute(sql`UPDATE tournaments SET status = 'cancelled' WHERE id = ${id}`);
+    // Cancel any non-terminal matches under this tournament.
+    await d.execute(
+      sql`UPDATE matches
+             SET status = 'cancelled'
+           WHERE tournament_id = ${id}
+             AND status NOT IN ('results', 'cancelled')`,
+    );
+  }
+
+  return c.json({ ok: true as const }, 200);
 });
 
 // ─── POST /tournaments/:id/register ────────────────────────────────────────
@@ -400,6 +526,7 @@ tournamentScheduleRoutes.openapi(withdrawRoute, async (c) => {
   return c.json({ ok: true as const }, 200);
 });
 
-// `desc`/`gt` consumed by future paginated views; keep in scope.
+// `desc`/`gt`/`lt` consumed by future paginated views; keep in scope.
 void desc;
 void gt;
+void lt;

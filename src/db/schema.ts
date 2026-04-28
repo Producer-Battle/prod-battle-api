@@ -756,6 +756,11 @@ export const tournaments = pgTable('tournaments', {
   effectiveSize: integer(),
   winnerId: uuid().references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
+  // When set, all bracket matches in this tournament use this submit duration
+  // (seconds) instead of the mode default. Admin or cron may supply a value.
+  submitSecondsOverride: integer(),
+  // true for rows auto-created by the weekly cron. Drives idempotency guard.
+  autoCreated: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

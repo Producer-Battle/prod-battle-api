@@ -789,9 +789,15 @@ async function openRound1(tournamentId: string): Promise<void> {
     id: string;
     genre_id: string;
     max_entrants: number;
+    submit_seconds_override: number | null;
   }>(
-    sql`SELECT id, genre_id, max_entrants FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
-  )) as Array<{ id: string; genre_id: string; max_entrants: number }>;
+    sql`SELECT id, genre_id, max_entrants, submit_seconds_override FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
+  )) as Array<{
+    id: string;
+    genre_id: string;
+    max_entrants: number;
+    submit_seconds_override: number | null;
+  }>;
   if (!t) return;
 
   const entrants = await d.execute<{ user_id: string }>(
@@ -804,7 +810,7 @@ async function openRound1(tournamentId: string): Promise<void> {
     return;
   }
 
-  // Round to nearest power of 2 ≤ entrants.length, capped at max_entrants.
+  // Round to nearest power of 2 <= entrants.length, capped at max_entrants.
   const cap = Math.min(arr.length, t.max_entrants);
   let size = 1;
   while (size * 2 <= cap) size *= 2;
@@ -813,17 +819,28 @@ async function openRound1(tournamentId: string): Promise<void> {
   const seeded = arr.slice(0, size).sort(() => Math.random() - 0.5);
 
   // Generate `size/2` round-1 matches with primary_genre_id = tournament.genre_id.
-  // submit_seconds left null so they default per-mode.
+  // If submitSecondsOverride is set, pass it to the match row; otherwise leave null
+  // so the mode default applies.
+  const override = t.submit_seconds_override ?? null;
   for (let i = 0; i < seeded.length; i += 2) {
     const a = seeded[i];
     const b = seeded[i + 1];
     if (!a || !b) continue;
     const roomCode = generateRoomCode();
     const [m] = (await d.execute<{ id: string }>(
-      sql`INSERT INTO matches
-            (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode, tournament_id, tournament_round)
-            VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated', ${tournamentId}, 1)
-            RETURNING id`,
+      override !== null
+        ? sql`INSERT INTO matches
+                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                 tournament_id, tournament_round, submit_seconds)
+                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                        ${tournamentId}, 1, ${override})
+                RETURNING id`
+        : sql`INSERT INTO matches
+                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                 tournament_id, tournament_round)
+                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                        ${tournamentId}, 1)
+                RETURNING id`,
     )) as Array<{ id: string }>;
     if (!m) continue;
     await d.execute(
@@ -896,21 +913,31 @@ async function advanceRound(tournamentId: string): Promise<void> {
 
   // Pair winners into next-round matches.
   const nextRound = currentRound + 1;
-  const [t] = (await d.execute<{ genre_id: string }>(
-    sql`SELECT genre_id FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
-  )) as Array<{ genre_id: string }>;
+  const [t] = (await d.execute<{ genre_id: string; submit_seconds_override: number | null }>(
+    sql`SELECT genre_id, submit_seconds_override FROM tournaments WHERE id = ${tournamentId} LIMIT 1`,
+  )) as Array<{ genre_id: string; submit_seconds_override: number | null }>;
   if (!t) return;
 
+  const override = t.submit_seconds_override ?? null;
   for (let i = 0; i < winnerArr.length; i += 2) {
     const a = winnerArr[i];
     const b = winnerArr[i + 1];
     if (!a || !b) continue;
     const roomCode = generateRoomCode();
     const [m] = (await d.execute<{ id: string }>(
-      sql`INSERT INTO matches
-            (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode, tournament_id, tournament_round)
-            VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated', ${tournamentId}, ${nextRound})
-            RETURNING id`,
+      override !== null
+        ? sql`INSERT INTO matches
+                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                 tournament_id, tournament_round, submit_seconds)
+                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                        ${tournamentId}, ${nextRound}, ${override})
+                RETURNING id`
+        : sql`INSERT INTO matches
+                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                 tournament_id, tournament_round)
+                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                        ${tournamentId}, ${nextRound})
+                RETURNING id`,
     )) as Array<{ id: string }>;
     if (!m) continue;
     await d.execute(
@@ -1000,6 +1027,126 @@ async function genrePromotionScan(): Promise<void> {
   }
 }
 
+// ── Weekly tournament auto-creation ──────────────────────────────────────
+// Trigger window: Monday 09:00-09:30 UTC.
+// Creates one tournament per week with starts_at = upcoming Sunday 12:00 UTC.
+// Idempotency: skips if an auto_created tournament already exists whose
+// starts_at falls in the same ISO week as the upcoming Sunday slot.
+
+let lastWeeklyTournamentScanAt = 0;
+
+// Exported for unit tests.
+export function nextSundayNoon(from: Date): Date {
+  // Day 0=Sun, 1=Mon ... 6=Sat in UTC.
+  const day = from.getUTCDay(); // 0=Sun
+  // Days until next Sunday (if today is Sunday, that's next week's Sunday = 7 days ahead).
+  const daysUntilSunday = day === 0 ? 7 : 7 - day;
+  const sunday = Date.UTC(
+    from.getUTCFullYear(),
+    from.getUTCMonth(),
+    from.getUTCDate() + daysUntilSunday,
+    12,
+    0,
+    0,
+    0,
+  );
+  return new Date(sunday);
+}
+
+// Returns the ISO week number (1-53) for a UTC date.
+export function isoWeekNumber(d: Date): number {
+  // Align to Thursday of the same week (ISO: week belongs to the Thursday).
+  const thursday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Set to nearest Thursday: current date + 4 - current day number (Mon=1 ... Sun=7).
+  const dayOfWeek = thursday.getUTCDay() || 7; // convert Sun(0) to 7
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - dayOfWeek);
+  const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+  return Math.ceil(((thursday.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+}
+
+export function isWeeklyTournamentWindow(now: Date): boolean {
+  // Must be Monday (UTC day 1), hour 09, minute 0-29.
+  return now.getUTCDay() === 1 && now.getUTCHours() === 9 && now.getUTCMinutes() < 30;
+}
+
+const WEEKLY_SUBMIT_OVERRIDES = [600, 1800, 3600] as const;
+
+async function weeklyTournamentScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastWeeklyTournamentScanAt < 30_000) return;
+  lastWeeklyTournamentScanAt = now;
+
+  const nowDate = new Date(now);
+  if (!isWeeklyTournamentWindow(nowDate)) return;
+
+  const d = db();
+
+  // Compute the target Sunday 12:00 UTC slot for this week.
+  const startsAt = nextSundayNoon(nowDate);
+  const targetWeek = isoWeekNumber(startsAt);
+  const targetYear = startsAt.getUTCFullYear();
+
+  // Idempotency: is there already an auto_created tournament in the same ISO week?
+  // We check starts_at falls within Sun 00:00 to Sat 23:59 of that same week.
+  // Simpler: just check starts_at between Sunday 00:00 and Sunday 23:59 UTC of that day.
+  const weekStart = new Date(
+    Date.UTC(startsAt.getUTCFullYear(), startsAt.getUTCMonth(), startsAt.getUTCDate(), 0, 0, 0),
+  );
+  const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 3_600_000);
+
+  const existing = await d.execute<{ id: string }>(
+    sql`SELECT id FROM tournaments
+         WHERE auto_created = true
+           AND starts_at >= ${weekStart.toISOString()}::timestamptz
+           AND starts_at < ${weekEnd.toISOString()}::timestamptz
+         LIMIT 1`,
+  );
+  if ((existing as Array<{ id: string }>).length > 0) return;
+
+  // Pick a random active system genre.
+  const genreRows = await d.execute<{ id: string; slug: string; name: string }>(
+    sql`SELECT id, slug, name FROM genres
+         WHERE kind = 'system' AND status = 'active'
+         ORDER BY random()
+         LIMIT 1`,
+  );
+  const genre = (genreRows as Array<{ id: string; slug: string; name: string }>)[0];
+  if (!genre) {
+    console.warn('[tournaments] weeklyTournamentScan: no active system genres available');
+    return;
+  }
+
+  // Pick a random submit override from the allowed set.
+  const submitSecondsOverride =
+    WEEKLY_SUBMIT_OVERRIDES[Math.floor(Math.random() * WEEKLY_SUBMIT_OVERRIDES.length)] ?? 1800;
+
+  const registrationClosesAt = new Date(startsAt.getTime() - 5 * 60 * 1000);
+  const name = `Weekly Battle - ${genre.name} - W${targetWeek} ${targetYear}`;
+
+  const inserted = await d.execute<{ id: string }>(
+    sql`INSERT INTO tournaments
+          (name, genre_id, starts_at, registration_closes_at, max_entrants,
+           submit_seconds_override, auto_created, created_by)
+        VALUES
+          (${name}, ${genre.id}, ${startsAt.toISOString()}::timestamptz,
+           ${registrationClosesAt.toISOString()}::timestamptz,
+           16, ${submitSecondsOverride}, true, NULL)
+        RETURNING id`,
+  );
+  const newRow = (inserted as Array<{ id: string }>)[0];
+  if (!newRow) {
+    console.error('[tournaments] weeklyTournamentScan: INSERT returned no row');
+    return;
+  }
+
+  console.log('[tournaments] auto-created weekly', {
+    id: newRow.id,
+    genreSlug: genre.slug,
+    submitSecondsOverride,
+    startsAt: startsAt.toISOString(),
+  });
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -1023,6 +1170,9 @@ export function startTickLoop(): () => void {
       voteRingScan().catch((err: Error) => console.error('[vote-ring] error:', err.message));
       tournamentScheduleScan().catch((err: Error) =>
         console.error('[tournament-sched] error:', err.message),
+      );
+      weeklyTournamentScan().catch((err: Error) =>
+        console.error('[weekly-tournament] error:', err.message),
       );
       genrePromotionScan().catch((err: Error) =>
         console.error('[genre-promote] error:', err.message),
