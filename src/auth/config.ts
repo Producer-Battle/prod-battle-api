@@ -13,6 +13,7 @@
 
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { eq } from 'drizzle-orm';
 import { db as getDb } from '../db/client.js';
 import * as schema from '../db/schema.js';
 import { env } from '../env.js';
@@ -64,6 +65,55 @@ export const auth = betterAuth({
     // screen with no email coming. This hook lets us send THAT user a
     // real "you already have an account" email so their inbox gets
     // something actionable, without leaking which emails exist.
+    sendResetPassword: async ({ user, url }) => {
+      // better-auth has already baked the callbackURL into `url` from the
+      // client's `redirectTo` (see /auth/request-password-reset). When the
+      // user clicks, the API validates the token and 302s to that callback
+      // (our /auth/reset-password page) with the token still attached.
+      const finalUrl = url;
+
+      const nodemailer = await import('nodemailer');
+      const smtpPort = Number(process.env.SMTP_PORT ?? 1025);
+      const transport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 5000,
+        auth: process.env.SMTP_USER
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+      });
+      void transport
+        .sendMail({
+          from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
+          to: user.email,
+          subject: 'Reset your Producer Battle password',
+          text: `Someone (probably you) asked to reset your Producer Battle password. Open this link within an hour to choose a new one: ${finalUrl}\n\nIf you didn't request this, you can ignore this email.`,
+          html: `<p>Someone (probably you) asked to reset your Producer Battle password.</p><p><a href="${finalUrl}">Choose a new password</a> (link expires in 1 hour).</p><p>If you didn't request this, you can ignore this email.</p>`,
+        })
+        .catch((err: Error) => {
+          console.warn('[auth] sendResetPassword mail failed:', err.message);
+        });
+    },
+    resetPasswordTokenExpiresIn: 60 * 60, // 1h reset window
+    // Clicking a reset link sent to the registered email is proof of email
+    // ownership, same as clicking the original verification link. Without
+    // this, users who never confirmed (e.g. delivery failed) would reset
+    // their password and then still hit 403 on sign-in due to
+    // requireEmailVerification=true. Flip the flag so the reset itself
+    // unblocks them. better-auth doesn't do this on its own.
+    onPasswordReset: async ({ user }) => {
+      try {
+        await getDb()
+          .update(schema.users)
+          .set({ emailVerified: true, updatedAt: new Date() })
+          .where(eq(schema.users.id, user.id));
+      } catch (err) {
+        console.warn('[auth] onPasswordReset verify-flip failed:', (err as Error).message);
+      }
+    },
     onExistingUserSignUp: async ({ user }) => {
       try {
         const candidates = (env.WEB_ORIGIN ?? 'http://localhost:5173')
