@@ -113,8 +113,12 @@ describe('asset round-trip (real S3)', () => {
   });
 
   it('GET /matches/:code returns samplePack sample urls that serve the uploaded bytes', async () => {
+    // Quickplay (or ranked/private/tournament/daily) auto-generates a pack
+    // and links it to the match via samplePackId. flip mode is INTENTIONALLY
+    // excluded - it ships only the flip source loop and never a kit
+    // (matchmaking/defaults.ts:DEFAULT_SAMPLE_MODE.flip = 'none').
     const match = await createMatch(app, {
-      mode: 'flip',
+      mode: 'quickplay',
       genreSlug: TEST_GENRE_SLUG,
       teamSize: 1,
       teamCount: 2,
