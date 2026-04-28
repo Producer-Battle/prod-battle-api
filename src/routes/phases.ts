@@ -5,7 +5,7 @@
 //   GET  /matches/:code/results  - final leaderboard with revealed identities
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users, votes } from '../db/schema.js';
@@ -201,16 +201,18 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   const submitterUserIds = [...new Set(subs.map((s) => s.userId).filter(Boolean))];
   const submitterFpMap = new Map<string, Set<string>>();
   if (submitterUserIds.length > 0) {
-    const submitterRows = await d.execute<{
-      id: string;
-      device_fingerprints: Array<{ canvasHash: string; screenDims: string }> | null;
-    }>(sql`SELECT id, device_fingerprints FROM users WHERE id = ANY(${submitterUserIds})`);
-    for (const row of submitterRows as Array<{
-      id: string;
-      device_fingerprints: Array<{ canvasHash: string; screenDims: string }> | null;
-    }>) {
+    // Drizzle's inArray builds a proper Postgres array literal so this
+    // works regardless of how many ids are in the list. Earlier raw-sql
+    // version with `ANY(${submitterUserIds})` produced `ANY(($1, $2))`,
+    // a tuple, which Postgres rejects with
+    // "op ANY/ALL (array) requires array on right side".
+    const submitterRows = await d
+      .select({ id: users.id, deviceFingerprints: users.deviceFingerprints })
+      .from(users)
+      .where(inArray(users.id, submitterUserIds));
+    for (const row of submitterRows) {
       const fpSet = new Set<string>(
-        (row.device_fingerprints ?? []).map((f) => `${f.canvasHash}|${f.screenDims}`),
+        (row.deviceFingerprints ?? []).map((f) => `${f.canvasHash}|${f.screenDims}`),
       );
       submitterFpMap.set(row.id, fpSet);
     }
