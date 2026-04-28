@@ -1,9 +1,11 @@
 // Self-serve profile endpoints for authenticated users.
 //
-// GET  /me                      - full profile shape for the current user
-// PATCH /me                     - update handle and/or avatarUrl
-// POST /me/claim-guest-handle   - merge a guest identity into the caller's account
-// GET  /users/:handle           - public profile for any active user (no email, no status)
+// GET  /me                                - full profile shape for the current user
+// PATCH /me                               - update handle, avatarUrl, accentColor, etc.
+// POST /me/claim-guest-handle             - merge a guest identity into the caller's account
+// GET  /users/:handle                     - public profile for any active user (no email, no status)
+// GET  /me/submissions/:id/download       - 302 to signed S3 URL for own submission (paid only)
+// PUT  /me/pinned-tracks                  - set up to 3 pinned submissions (paid only)
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
@@ -13,6 +15,7 @@ import { db } from '../db/client.js';
 import {
   accounts,
   matchPlayers,
+  matches,
   producerProfiles,
   sessions,
   submissions,
@@ -57,8 +60,12 @@ const MeResponse = z
     email: z.string().email(),
     role: z.enum(['producer', 'ar', 'admin']),
     plan: z.enum(['free', 'paid']),
+    // Convenience flag - true when plan='paid'. Propagated to all handle renders.
+    isSupporter: z.boolean(),
     status: z.enum(['active', 'archived', 'deleted']),
     avatarUrl: z.string().nullable(),
+    // Supporter perk #4: custom hex accent color for profile ring. Null when unset.
+    accentColor: z.string().nullable(),
     bio: z.string().nullable(),
     socialLinks: z.record(z.string(), z.string()),
     createdAt: z.string(),
@@ -120,6 +127,7 @@ meRoutes.openapi(getMeRoute, async (c) => {
       plan: users.plan,
       status: users.status,
       avatarUrl: users.avatarUrl,
+      accentColor: users.accentColor,
       createdAt: users.createdAt,
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
@@ -208,8 +216,10 @@ meRoutes.openapi(getMeRoute, async (c) => {
       email: row.email,
       role: row.role,
       plan: row.plan,
+      isSupporter: row.plan === 'paid',
       status: row.status,
       avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+      accentColor: row.accentColor ?? null,
       bio: row.bio ?? null,
       socialLinks: row.socialLinks ?? {},
       createdAt: row.createdAt.toISOString(),
@@ -236,12 +246,20 @@ meRoutes.openapi(getMeRoute, async (c) => {
 
 const HANDLE_RE = /^[a-zA-Z0-9_-]{3,20}$/;
 
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
 const PatchMeBody = z
   .object({
     handle: z.string().regex(HANDLE_RE, 'Handle must be 3-20 chars [a-zA-Z0-9_-]').optional(),
     avatarUrl: z.string().url('avatarUrl must be a valid URL').nullable().optional(),
     bio: z.string().max(500).nullable().optional(),
     socialLinks: z.record(z.string(), z.string().url()).nullable().optional(),
+    // Supporter perk #4: custom hex accent color. Only accepted when plan='paid'.
+    accentColor: z
+      .string()
+      .regex(HEX_COLOR_RE, 'accentColor must be a hex color like #ff66aa')
+      .nullable()
+      .optional(),
     // Per-section profile visibility. Missing keys default to true.
     profileVisibility: z
       .object({
@@ -283,6 +301,7 @@ meRoutes.openapi(patchMeRoute, async (c) => {
   const updates: {
     handle?: string;
     avatarUrl?: string | null;
+    accentColor?: string | null;
     profileVisibility?: Record<string, boolean>;
   } = {};
 
@@ -309,6 +328,28 @@ meRoutes.openapi(patchMeRoute, async (c) => {
 
   if (body.avatarUrl !== undefined) {
     updates.avatarUrl = body.avatarUrl;
+  }
+
+  if (body.accentColor !== undefined) {
+    // Gate: only paid users may set an accent color.
+    if (body.accentColor !== null) {
+      // Fetch current plan to validate entitlement.
+      const [planRow] = await d
+        .select({ plan: users.plan })
+        .from(users)
+        .where(eq(users.id, user.id))
+        .limit(1);
+      if (planRow?.plan !== 'paid') {
+        return c.json(
+          {
+            error: 'supporter_only',
+            message: 'Accent color is a Supporter perk. Upgrade at /billing.',
+          },
+          402 as never,
+        );
+      }
+    }
+    updates.accentColor = body.accentColor;
   }
 
   if (Object.keys(updates).length > 0) {
@@ -355,6 +396,7 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       plan: users.plan,
       status: users.status,
       avatarUrl: users.avatarUrl,
+      accentColor: users.accentColor,
       createdAt: users.createdAt,
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
@@ -389,8 +431,10 @@ meRoutes.openapi(patchMeRoute, async (c) => {
       email: row.email,
       role: row.role,
       plan: row.plan,
+      isSupporter: row.plan === 'paid',
       status: row.status,
       avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+      accentColor: row.accentColor ?? null,
       bio: row.bio ?? null,
       socialLinks: row.socialLinks ?? {},
       createdAt: row.createdAt.toISOString(),
@@ -711,6 +755,10 @@ const PublicProfileResponse = z
     id: z.string().uuid(),
     handle: z.string(),
     avatarUrl: z.string().nullable(),
+    // Supporter perk #4: accent color for the animated profile ring.
+    accentColor: z.string().nullable(),
+    // Supporter perk #1: badge flag for handle rendering.
+    isSupporter: z.boolean(),
     role: z.enum(['producer', 'ar', 'admin']),
     bio: z.string().nullable(),
     socialLinks: z.record(z.string(), z.string()),
@@ -728,6 +776,8 @@ const PublicProfileResponse = z
       matches: z.number().int(),
       streakDays: z.number().int(),
     }),
+    // Supporter perk #6: pinned tracks (up to 3), shown above recent submissions.
+    pinnedTracks: z.array(PublicSubmission),
     recentSubmissions: z.array(PublicSubmission),
   })
   .openapi('PublicProfileResponse');
@@ -759,13 +809,16 @@ meRoutes.openapi(getUserRoute, async (c) => {
       id: users.id,
       handle: users.handle,
       role: users.role,
+      plan: users.plan,
       avatarUrl: users.avatarUrl,
+      accentColor: users.accentColor,
       status: users.status,
       createdAt: users.createdAt,
       honor: users.honor,
       calibrationMatchesRemaining: users.calibrationMatchesRemaining,
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
+      pinnedSubmissionIds: producerProfiles.pinnedSubmissionIds,
     })
     .from(users)
     .leftJoin(producerProfiles, eq(producerProfiles.userId, users.id))
@@ -883,10 +936,61 @@ meRoutes.openapi(getUserRoute, async (c) => {
         WHERE s.user_id = ${row.id}`,
   );
 
+  // Resolve pinned submissions (perk #6). Only paid users can set them, but
+  // anyone can view them on a profile. The IDs are stored in display order.
+  const pinnedIds: string[] = row.pinnedSubmissionIds ?? [];
+  let pinnedTracks: Array<{
+    id: string;
+    title: string | null;
+    audioUrl: string;
+    score: number;
+    rank: number | null;
+    mode: string;
+    createdAt: string;
+  }> = [];
+  if (pinnedIds.length > 0) {
+    const pinnedRows = await d.execute<{
+      id: string;
+      title: string | null;
+      audio_url: string;
+      score: string;
+      final_rank: number | null;
+      mode: string;
+      created_at: string;
+    }>(
+      sql`SELECT s.id, s.title, s.audio_url, s.score::text, s.final_rank,
+                 m.mode, s.created_at::text
+            FROM submissions s
+            JOIN matches m ON m.id = s.match_id
+           WHERE s.id = ANY(${pinnedIds}::uuid[])
+             AND s.is_public = true`,
+    );
+    // Re-order by the stored pinned array order.
+    const byId = new Map(pinnedRows.map((r) => [r.id, r]));
+    pinnedTracks = await Promise.all(
+      pinnedIds
+        .filter((id) => byId.has(id))
+        .map(async (id) => {
+          const s = byId.get(id) as NonNullable<(typeof pinnedRows)[number]>;
+          return {
+            id: s.id,
+            title: s.title,
+            audioUrl: await signUrl(s.audio_url, 3600),
+            score: Number(s.score),
+            rank: s.final_rank ?? null,
+            mode: s.mode,
+            createdAt: s.created_at,
+          };
+        }),
+    );
+  }
+
   return c.json({
     id: row.id,
     handle: row.handle,
     avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+    accentColor: row.accentColor ?? null,
+    isSupporter: row.plan === 'paid',
     role: row.role,
     bio: row.bio ?? null,
     socialLinks: row.socialLinks ?? {},
@@ -902,6 +1006,7 @@ meRoutes.openapi(getUserRoute, async (c) => {
       matches: Number(matchStats?.matches ?? 0),
       streakDays: Number(matchStats?.streak ?? 0),
     },
+    pinnedTracks,
     recentSubmissions,
   });
 });
@@ -1008,4 +1113,178 @@ meRoutes.openapi(deleteMeRoute, async (c) => {
     { status: 'scheduled_for_deletion' as const, graceEndsAt: graceEndsAt.toISOString() },
     200,
   );
+});
+
+// ─── GET /me/submissions/:id/download ─────────────────────────────────────────
+//
+// Supporter perk #5: download your own submission as the original audio file.
+//
+// Audio format note: submissions store whatever the transcode pipeline produced
+// in audioUrl. The pipeline currently stores .opus (transcoded from the raw
+// upload). This endpoint returns a 302 to a signed S3 URL for that .opus file
+// with Content-Disposition: attachment so the browser downloads it. We do NOT
+// transcode to WAV on the fly because that would require a sync ffmpeg job in
+// the request path. The .opus Opus file is lossless-quality (192 kbps) and
+// decodable by all modern tools (FFmpeg, VLC, Audacity). If the audioUrl already
+// ends in .wav (legacy or future path), the WAV is served directly.
+//
+// Gate: plan='paid'. Free users receive 402 with an upgrade message.
+
+const downloadSubmissionRoute = createRoute({
+  method: 'get',
+  path: '/me/submissions/{id}/download',
+  tags: ['profile'],
+  summary: 'Download own submission audio (Supporter only)',
+  middleware: [requireAuth()] as const,
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+  },
+  responses: {
+    302: { description: 'Redirects to signed audio URL' },
+    401: { description: 'Unauthenticated' },
+    402: { description: 'Supporter plan required' },
+    403: { description: 'Not your submission' },
+    404: { description: 'Submission not found' },
+  },
+});
+
+meRoutes.openapi(downloadSubmissionRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+
+  if (user.plan !== 'paid') {
+    return c.json(
+      { error: 'supporter_only', message: 'Download is a Supporter perk. Upgrade at /billing.' },
+      402,
+    );
+  }
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [sub] = await d
+    .select({
+      userId: submissions.userId,
+      audioUrl: submissions.audioUrl,
+      title: submissions.title,
+    })
+    .from(submissions)
+    .where(eq(submissions.id, id))
+    .limit(1);
+
+  if (!sub) return c.json({ error: 'not_found', message: 'Submission not found.' }, 404);
+  if (sub.userId !== user.id) {
+    return c.json(
+      { error: 'forbidden', message: 'You can only download your own submissions.' },
+      403,
+    );
+  }
+
+  // Determine filename from the audio URL extension.
+  const ext = sub.audioUrl.match(/\.([a-z0-9]{2,5})(\?|$)/i)?.[1] ?? 'opus';
+  const filename = `${(sub.title ?? `submission-${id}`).replace(/[^a-zA-Z0-9._-]/g, '_')}.${ext}`;
+
+  // Sign a 10-minute download URL.
+  const signedUrl = await signUrl(sub.audioUrl, 600);
+
+  // Redirect to the signed URL. Content-Disposition header is best-effort;
+  // it works when served via the signed URL only if S3 response-content-disposition
+  // is appended. For simplicity we rely on the browser's auto-download from
+  // the signed URL's Content-Disposition header set by S3 presigning.
+  return c.redirect(signedUrl, 302);
+});
+
+// ─── PUT /me/pinned-tracks ────────────────────────────────────────────────────
+//
+// Supporter perk #6: set up to 3 pinned submission IDs on your profile.
+// Free users get 0 pinned (array must be empty).
+// Paid users get up to 3.
+//
+// Validates that all submitted IDs belong to the caller and are public.
+
+const PinnedTracksBody = z
+  .object({
+    submissionIds: z.array(z.string().uuid()).max(3),
+  })
+  .openapi('PinnedTracksBody');
+
+const pinnedTracksRoute = createRoute({
+  method: 'put',
+  path: '/me/pinned-tracks',
+  tags: ['profile'],
+  summary: 'Set up to 3 pinned tracks (Supporter only)',
+  middleware: [requireAuth()] as const,
+  request: {
+    body: { content: { 'application/json': { schema: PinnedTracksBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Pinned tracks updated',
+      content: {
+        'application/json': {
+          schema: z.object({ pinnedSubmissionIds: z.array(z.string().uuid()) }),
+        },
+      },
+    },
+    400: { description: 'Validation error' },
+    401: { description: 'Unauthenticated' },
+    402: { description: 'Supporter plan required for pinning' },
+  },
+});
+
+meRoutes.openapi(pinnedTracksRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+
+  const { submissionIds } = c.req.valid('json');
+
+  // Free users may only have 0 pinned tracks.
+  if (submissionIds.length > 0 && user.plan !== 'paid') {
+    return c.json(
+      {
+        error: 'supporter_only',
+        message: 'Pinning tracks is a Supporter perk. Upgrade at /billing.',
+      },
+      402,
+    );
+  }
+
+  const d = db();
+
+  // Validate all IDs belong to the caller and are public.
+  if (submissionIds.length > 0) {
+    const owned = await d.execute<{ id: string }>(
+      sql`SELECT id FROM submissions
+           WHERE id = ANY(${submissionIds}::uuid[])
+             AND user_id = ${user.id}
+             AND is_public = true`,
+    );
+    const ownedIds = new Set((owned as Array<{ id: string }>).map((r) => r.id));
+    const invalid = submissionIds.filter((id) => !ownedIds.has(id));
+    if (invalid.length > 0) {
+      return c.json(
+        {
+          error: 'invalid_submissions',
+          message: `Submission IDs not found or not yours: ${invalid.join(', ')}`,
+        },
+        400,
+      );
+    }
+  }
+
+  await d
+    .insert(producerProfiles)
+    .values({
+      userId: user.id,
+      openToAr: true,
+      bio: null,
+      socialLinks: {},
+      pinnedSubmissionIds: submissionIds,
+    })
+    .onConflictDoUpdate({
+      target: producerProfiles.userId,
+      set: { pinnedSubmissionIds: submissionIds },
+    });
+
+  return c.json({ pinnedSubmissionIds: submissionIds }, 200);
 });

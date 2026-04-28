@@ -14,6 +14,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
 
 /*
@@ -97,6 +98,9 @@ export const users = pgTable(
     // grace period. Logging in during the grace clears it; the cron sweep
     // hard-deletes after grace expires.
     deletedAt: timestamp({ withTimezone: true }),
+    // Supporter perk #4: custom profile accent color (hex like #ff66aa).
+    // Only settable when plan='paid'. Null means no accent ring is shown.
+    accentColor: varchar({ length: 16 }),
     // Lightweight browser fingerprint at signup - used as a cluster
     // signal alongside session.ipAddress in the anti-smurf guard.
     // Format: { canvasHash, screenDims, timezone, userAgent } - none
@@ -142,6 +146,10 @@ export const producerProfiles = pgTable('producer_profiles', {
   location: text(),
   openToAr: boolean().notNull().default(true),
   socialLinks: jsonb().$type<Record<string, string>>().notNull().default({}),
+  // Supporter perk #6: up to 3 pinned submission UUIDs, ordered by user preference.
+  // Stored in the order the user wants them shown (not by score).
+  // Free users: 0 pinned. Paid users: up to 3 pinned.
+  pinnedSubmissionIds: uuid().array().notNull().default(sql`ARRAY[]::uuid[]`),
 });
 
 export const arApplications = pgTable('ar_applications', {
@@ -825,3 +833,27 @@ export const gameRules = pgTable('game_rules', {
   updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   updatedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
 });
+
+/*
+ * Monthly playlists - supporter perk #7.
+ * Admin-curated playlists, one per calendar month. Only published rows are
+ * visible to paid users via GET /supporter/playlists. Admins create/edit
+ * via POST /admin/playlists. submission_ids is an ordered array of
+ * submission UUIDs; the API resolves them to full submission details when
+ * serving the detail view.
+ */
+export const monthlyPlaylists = pgTable(
+  'monthly_playlists',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    // Stored as the first day of the month: YYYY-MM-01.
+    month: date({ mode: 'string' }).notNull(),
+    curatorUserId: uuid().references(() => users.id, { onDelete: 'set null' }),
+    title: text().notNull(),
+    description: text(),
+    submissionIds: uuid().array().notNull().default(sql`ARRAY[]::uuid[]`),
+    publishedAt: timestamp({ withTimezone: true }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('monthly_playlists_month_unique').on(t.month)],
+);

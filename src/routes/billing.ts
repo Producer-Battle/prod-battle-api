@@ -20,6 +20,7 @@ import { PaymentStatus, SubscriptionStatus, createMollieClient } from '@mollie/a
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { users } from '../db/schema.js';
+import { syncSupporterRole } from '../discord/role-sync.js';
 import { env } from '../env.js';
 import { requireAuth } from '../middleware/session.js';
 
@@ -181,11 +182,16 @@ billingRoutes.openapi(webhookRoute, async (c) => {
       }
 
       if (payment.status === PaymentStatus.paid) {
-        await d
+        const updated = await d
           .update(users)
           .set({ plan: 'paid', updatedAt: new Date() })
-          .where(eq(users.mollieCustomerId, customerId));
+          .where(eq(users.mollieCustomerId, customerId))
+          .returning({ id: users.id });
         console.info(`[billing] plan set to paid for Mollie customer ${customerId}`);
+        // Best-effort Discord role grant - don't await so webhook stays fast.
+        for (const u of updated) {
+          syncSupporterRole(u.id, true).catch(() => undefined);
+        }
       } else if (
         payment.status === PaymentStatus.canceled ||
         payment.status === PaymentStatus.expired ||
@@ -246,10 +252,15 @@ export async function applyPlanFromPayment(
   if (!customerId) return 'not_found';
 
   if (payment.status === PaymentStatus.paid) {
-    await d
+    const updated = await d
       .update(users)
       .set({ plan: 'paid', updatedAt: new Date() })
-      .where(eq(users.mollieCustomerId, customerId));
+      .where(eq(users.mollieCustomerId, customerId))
+      .returning({ id: users.id });
+    // Best-effort Discord sync.
+    for (const u of updated) {
+      syncSupporterRole(u.id, true).catch(() => undefined);
+    }
     return 'paid';
   }
   return 'no_change';
@@ -257,11 +268,16 @@ export async function applyPlanFromPayment(
 
 export async function applyPlanFromSubscriptionCancel(mollieCustomerId: string): Promise<void> {
   const d = db();
-  await d
+  const updated = await d
     .update(users)
     .set({ plan: 'free', updatedAt: new Date() })
-    .where(eq(users.mollieCustomerId, mollieCustomerId));
+    .where(eq(users.mollieCustomerId, mollieCustomerId))
+    .returning({ id: users.id });
   console.info(
     `[billing] plan set to free for Mollie customer ${mollieCustomerId} (subscription cancelled)`,
   );
+  // Best-effort Discord sync.
+  for (const u of updated) {
+    syncSupporterRole(u.id, false).catch(() => undefined);
+  }
 }

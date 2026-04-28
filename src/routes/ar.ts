@@ -56,6 +56,7 @@ const topProducersRoute = createRoute({
                 userId: z.string().uuid(),
                 handle: z.string(),
                 avatarUrl: z.string().nullable(),
+                isSupporter: z.boolean(),
                 matchesPlayed: z.number().int(),
                 wins: z.number().int(),
                 totalSubmissionScore: z.number(),
@@ -84,6 +85,7 @@ arRoutes.openapi(topProducersRoute, async (c) => {
     user_id: string;
     handle: string;
     avatar_url: string | null;
+    plan: string;
     matches_played: string;
     wins: string;
     total_score: string;
@@ -91,6 +93,7 @@ arRoutes.openapi(topProducersRoute, async (c) => {
     SELECT u.id AS user_id,
            u.handle,
            u.avatar_url,
+           u.plan,
            COUNT(DISTINCT s.match_id)::text          AS matches_played,
            COUNT(*) FILTER (WHERE s.final_rank = 1)::text AS wins,
            COALESCE(SUM(s.score), 0)::text           AS total_score
@@ -99,7 +102,7 @@ arRoutes.openapi(topProducersRoute, async (c) => {
       JOIN genres g ON g.id = s.genre_id
      WHERE u.role IN ('producer')
        AND (${genreSlug ?? null}::text IS NULL OR g.slug = ${genreSlug ?? null})
-     GROUP BY u.id, u.handle, u.avatar_url
+     GROUP BY u.id, u.handle, u.avatar_url, u.plan
      HAVING COUNT(DISTINCT s.match_id) > 0
      ORDER BY total_score DESC, wins DESC
      LIMIT ${limit}
@@ -111,6 +114,7 @@ arRoutes.openapi(topProducersRoute, async (c) => {
         userId: r.user_id,
         handle: r.handle,
         avatarUrl: r.avatar_url,
+        isSupporter: r.plan === 'paid',
         matchesPlayed: Number(r.matches_played),
         wins: Number(r.wins),
         totalSubmissionScore: Number(r.total_score),
@@ -149,6 +153,7 @@ const recentBattlesRoute = createRoute({
                   z.object({
                     submissionId: z.string().uuid(),
                     userHandle: z.string(),
+                    isSupporter: z.boolean(),
                     finalRank: z.number().int().nullable(),
                     score: z.number(),
                     audioUrl: z.string(),
@@ -179,6 +184,7 @@ arRoutes.openapi(recentBattlesRoute, async (c) => {
     ended_at: string;
     submission_id: string;
     user_handle: string;
+    user_plan: string;
     final_rank: number | null;
     score: string;
     audio_url: string;
@@ -190,6 +196,7 @@ arRoutes.openapi(recentBattlesRoute, async (c) => {
            m.ended_at,
            s.id AS submission_id,
            u.handle AS user_handle,
+           u.plan AS user_plan,
            s.final_rank,
            s.score::text AS score,
            s.audio_url
@@ -215,6 +222,7 @@ arRoutes.openapi(recentBattlesRoute, async (c) => {
       submissions: {
         submissionId: string;
         userHandle: string;
+        isSupporter: boolean;
         finalRank: number | null;
         score: number;
         audioUrl: string;
@@ -237,6 +245,7 @@ arRoutes.openapi(recentBattlesRoute, async (c) => {
     entry.submissions.push({
       submissionId: r.submission_id,
       userHandle: r.user_handle,
+      isSupporter: r.user_plan === 'paid',
       finalRank: r.final_rank,
       score: Number(r.score),
       audioUrl: r.audio_url,
@@ -266,6 +275,7 @@ const producerDetailRoute = createRoute({
             userId: z.string().uuid(),
             handle: z.string(),
             avatarUrl: z.string().nullable(),
+            isSupporter: z.boolean(),
             bio: z.string().nullable(),
             location: z.string().nullable(),
             openToAr: z.boolean(),
@@ -498,6 +508,7 @@ arRoutes.openapi(producerDetailRoute, async (c) => {
       userId: profile.user_id,
       handle: profile.handle,
       avatarUrl: profile.avatar_url,
+      isSupporter: profile.plan === 'paid',
       bio: profile.bio,
       location: profile.location,
       openToAr: profile.open_to_ar,

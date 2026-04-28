@@ -162,6 +162,13 @@
       "when": 1745884800000,
       "tag": "0022_tournament_auto_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1745971200000,
+      "tag": "0023_supporter_perks",
+      "breakpoints": true
     }
   ]
 }

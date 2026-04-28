@@ -22,6 +22,7 @@ const FeedItem = z
     producer: z.object({
       handle: z.string(),
       avatarUrl: z.string().url().nullable(),
+      isSupporter: z.boolean(),
     }),
     genre: z.object({
       slug: z.string(),
@@ -71,6 +72,7 @@ feedRoutes.openapi(route, async (c) => {
       createdAt: submissions.createdAt,
       userHandle: users.handle,
       userAvatar: users.avatarUrl,
+      userPlan: users.plan,
       genreSlug: genres.slug,
       genreName: genres.name,
     })
@@ -101,7 +103,11 @@ feedRoutes.openapi(route, async (c) => {
       likes: r.likes,
       finalRank: r.finalRank,
       createdAt: r.createdAt.toISOString(),
-      producer: { handle: r.userHandle, avatarUrl: r.userAvatar },
+      producer: {
+        handle: r.userHandle,
+        avatarUrl: r.userAvatar,
+        isSupporter: r.userPlan === 'paid',
+      },
       genre: { slug: r.genreSlug, name: r.genreName },
       matchRoomCode: null,
     })),

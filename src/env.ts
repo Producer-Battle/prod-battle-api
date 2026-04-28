@@ -57,6 +57,16 @@ const envSchema = z.object({
   //   POST /billing/webhook returns 200 as a no-op (so Mollie doesn't retry).
   // Set MOLLIE_API_KEY=test_... for test mode or live_... for production.
   MOLLIE_API_KEY: z.string().optional(),
+
+  // Discord supporter role sync (perk #2). All three must be set for the
+  // integration to activate; if any is missing the module is a no-op and
+  // logs once at startup. See src/discord/role-sync.ts.
+  //   DISCORD_BOT_TOKEN         - Bot token from the Discord developer portal.
+  //   DISCORD_GUILD_ID          - The numeric ID of your Discord server.
+  //   DISCORD_SUPPORTER_ROLE_ID - The role ID to grant/revoke for paid users.
+  DISCORD_BOT_TOKEN: z.string().optional(),
+  DISCORD_GUILD_ID: z.string().optional(),
+  DISCORD_SUPPORTER_ROLE_ID: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

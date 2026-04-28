@@ -36,6 +36,7 @@ const LeaderRow = z
     userId: z.string().uuid(),
     handle: z.string(),
     avatarUrl: z.string().nullable(),
+    isSupporter: z.boolean(),
     matchesPlayed: z.number().int(),
     wins: z.number().int(),
     points: z.number().int(),
@@ -78,6 +79,7 @@ leaderboardRoutes.openapi(leaderboardRoute, async (c) => {
     user_id: string;
     handle: string;
     avatar_url: string | null;
+    plan: string;
     matches_played: string;
     wins: string;
     points: string;
@@ -97,6 +99,7 @@ leaderboardRoutes.openapi(leaderboardRoute, async (c) => {
     SELECT u.id AS user_id,
            u.handle,
            u.avatar_url,
+           u.plan,
            sc.matches_played::text,
            sc.wins::text,
            (sc.wins * 10 + sc.matches_played)::text AS points
@@ -112,6 +115,7 @@ leaderboardRoutes.openapi(leaderboardRoute, async (c) => {
       userId: r.user_id,
       handle: r.handle,
       avatarUrl: r.avatar_url ? await signUrl(r.avatar_url, 3600) : null,
+      isSupporter: r.plan === 'paid',
       matchesPlayed: Number(r.matches_played),
       wins: Number(r.wins),
       points: Number(r.points),
@@ -157,6 +161,7 @@ leaderboardRoutes.openapi(leaderboardRoute, async (c) => {
         userId: user.id,
         handle: user.handle ?? '',
         avatarUrl: null,
+        isSupporter: user.plan === 'paid',
         matchesPlayed: Number(myRow.matches_played),
         wins: Number(myRow.wins),
         points: Number(myRow.points),
@@ -185,6 +190,7 @@ const SeasonLeaderRow = z
     handle: z.string(),
     avatarUrl: z.string().nullable(),
     plan: z.enum(['free', 'paid']),
+    isSupporter: z.boolean(),
     genreSlug: z.string(),
     rating: z.number(),
     wins: z.number().int(),
@@ -295,6 +301,7 @@ leaderboardRoutes.openapi(seasonLeaderboardRoute, async (c) => {
         handle: r.handle,
         avatarUrl: r.avatar_url ? await signUrl(r.avatar_url, 3600) : null,
         plan,
+        isSupporter: plan === 'paid',
         genreSlug: r.genre_slug,
         rating: Number(r.rating),
         wins: Number(r.wins),

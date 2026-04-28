@@ -25,7 +25,9 @@ vi.mock('../db/client.js', () => ({
       set: (values: { plan?: string }) => {
         lastUpdate = values;
         return {
-          where: () => Promise.resolve([]),
+          where: () => ({
+            returning: () => Promise.resolve([]),
+          }),
         };
       },
     }),

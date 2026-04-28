@@ -17,10 +17,10 @@ import { randomUUID } from 'node:crypto';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { bucket, publicUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { type SamplePackItem, genres, samplePacks } from '../db/schema.js';
+import { type SamplePackItem, genres, samplePacks, users } from '../db/schema.js';
 import { requireProducerQuota } from '../middleware/rate-limit.js';
 
 export const userPacksRoutes = new OpenAPIHono();
@@ -54,6 +54,32 @@ const STEM_TYPES = [
 
 const MAX_SAMPLES_PER_PACK = 32;
 const PRESIGN_TTL_SEC = 600; // 10 min upload window
+
+// Supporter perk #3: pack quota limits.
+//   Free tier:  1 active uploaded pack
+//   Paid tier: 10 active uploaded packs
+// "Active" = kind='uploaded' AND deleted_at IS NULL (soft-delete pattern not
+// yet implemented for packs so we just count all kind='uploaded' rows by creator).
+const FREE_PACK_QUOTA = 1;
+const PAID_PACK_QUOTA = 10;
+
+/**
+ * Check whether the user has reached their pack quota.
+ * Returns { allowed: true } or { allowed: false, quota, current }.
+ */
+export async function checkPackQuota(
+  userId: string,
+  plan: 'free' | 'paid',
+): Promise<{ allowed: boolean; quota: number; current: number }> {
+  const quota = plan === 'paid' ? PAID_PACK_QUOTA : FREE_PACK_QUOTA;
+  const d = db();
+  const [row] = await d.execute<{ n: string }>(
+    sql`SELECT COUNT(*)::text AS n FROM sample_packs
+         WHERE created_by = ${userId} AND kind = 'uploaded'`,
+  );
+  const current = Number(row?.n ?? 0);
+  return { allowed: current < quota, quota, current };
+}
 
 // ─── POST /user-packs/upload-url ────────────────────────────────────────────
 
@@ -204,6 +230,18 @@ const finalizeRoute = createRoute({
 userPacksRoutes.openapi(finalizeRoute, async (c) => {
   const user = c.var.user;
   if (!user) return c.json({ error: 'unauthenticated', message: 'Sign in.' }, 401);
+
+  // Supporter perk #3: enforce per-tier pack quota before creating the row.
+  const quotaCheck = await checkPackQuota(user.id, user.plan as 'free' | 'paid');
+  if (!quotaCheck.allowed) {
+    return c.json(
+      {
+        error: 'pack_quota',
+        message: `You've reached your pack limit (${quotaCheck.quota}). Upgrade to Supporter to upload more packs.`,
+      },
+      402 as never,
+    );
+  }
 
   const body = c.req.valid('json');
   const d = db();
