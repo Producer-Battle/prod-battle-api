@@ -1,7 +1,7 @@
 // Vote weight calculation: per-vote multiplier derived from the voter's
-// honor and plan. Returns the final weight to store in votes.weight.
+// honor. Returns the final weight to store in votes.weight.
 //
-//   raw_score (1..5) * (honorWeight + premium ? premiumBonus : 0)
+//   raw_score (1..5) * honorWeight
 //
 // honorWeight comes from the rules.voting.honorWeightCurve - a step
 // function over honor breakpoints. Default curve:
@@ -9,7 +9,12 @@
 //   honor 30-89 -> 1.0
 //   honor 90+   -> 1.5
 //
-// premiumBonus stacks additively on top of honorWeight.
+// Note: there used to be a `premiumVoteWeightBonus` that stacked an extra
+// multiplier for paid users, but that gave Supporters an in-match
+// advantage which contradicts the "Supporter is recognition + cosmetics,
+// not pay-to-win" stance. Removed in commit (see git blame). The field
+// stays in VotingRules for backwards-compat with existing rules rows in
+// game_rules; it's just ignored.
 
 import type { VotingRules } from '../game-rules/types.js';
 
@@ -25,11 +30,11 @@ export function honorMultiplier(honor: number, curve: VotingRules['honorWeightCu
 export function computeVoteWeight(args: {
   rawScore: number;
   honor: number;
+  // Kept in the signature so existing callers don't break, but the value
+  // is ignored - paid plan grants no extra vote weight.
   isPremium: boolean;
   rules: VotingRules;
 }): number {
   const honorMul = honorMultiplier(args.honor, args.rules.honorWeightCurve);
-  const premiumMul = args.isPremium ? args.rules.premiumVoteWeightBonus : 0;
-  const totalMul = honorMul + premiumMul;
-  return args.rawScore * totalMul;
+  return args.rawScore * honorMul;
 }

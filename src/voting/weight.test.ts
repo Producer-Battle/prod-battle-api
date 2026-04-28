@@ -33,14 +33,17 @@ describe('voting/weight', () => {
     expect(honorMultiplier(100, RULES.honorWeightCurve)).toBe(1.5);
   });
 
-  it('premium adds the bonus on top of the honor multiplier', () => {
-    const weight = computeVoteWeight({ rawScore: 4, honor: 100, isPremium: true, rules: RULES });
-    expect(weight).toBe(4 * (1.5 + 0.25));
+  it('premium plan does NOT change vote weight (Supporter has no in-match advantage)', () => {
+    const free = computeVoteWeight({ rawScore: 4, honor: 100, isPremium: false, rules: RULES });
+    const paid = computeVoteWeight({ rawScore: 4, honor: 100, isPremium: true, rules: RULES });
+    expect(free).toBe(4 * 1.5);
+    expect(paid).toBe(free);
   });
 
-  it('low-honor voter contributes 0 even premium', () => {
-    const weight = computeVoteWeight({ rawScore: 5, honor: 5, isPremium: true, rules: RULES });
-    // honor multiplier is 0, premium bonus 0.25 -> 5 * 0.25 = 1.25
-    expect(weight).toBeCloseTo(5 * 0.25);
+  it('low-honor voter contributes 0 regardless of plan', () => {
+    const paid = computeVoteWeight({ rawScore: 5, honor: 5, isPremium: true, rules: RULES });
+    const free = computeVoteWeight({ rawScore: 5, honor: 5, isPremium: false, rules: RULES });
+    expect(paid).toBe(0);
+    expect(free).toBe(0);
   });
 });
