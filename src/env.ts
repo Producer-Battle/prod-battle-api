@@ -42,6 +42,13 @@ const envSchema = z.object({
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
 
+  // Discord OAuth - optional. App at https://discord.com/developers/applications
+  // -> OAuth2 -> add redirect: ${AUTH_BASE_URL}/auth/callback/discord
+  // Setting both enables the provider; the web sign-in/up shows the button
+  // unconditionally and the callback returns 503 if not configured.
+  DISCORD_OAUTH_CLIENT_ID: z.string().optional(),
+  DISCORD_OAUTH_CLIENT_SECRET: z.string().optional(),
+
   // Freesound.org APIv2 token - register at https://freesound.org/apiv2/apply/
   FREESOUND_API_KEY: z.string().optional(),
 

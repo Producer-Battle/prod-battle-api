@@ -20,6 +20,7 @@ import { env } from '../env.js';
 import { sendEmail } from '../mail/send.js';
 
 const googleConfigured = Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
+const discordConfigured = Boolean(env.DISCORD_OAUTH_CLIENT_ID && env.DISCORD_OAUTH_CLIENT_SECRET);
 
 // Dev fallback so `pnpm dev` without a .env still boots. In prod the
 // AUTH_SECRET env var MUST be set to a ≥32-char random string.
@@ -151,14 +152,24 @@ export const auth = betterAuth({
     expiresIn: 60 * 60 * 24, // 24h verification window
   },
 
-  socialProviders: googleConfigured
-    ? {
-        google: {
-          clientId: env.GOOGLE_OAUTH_CLIENT_ID as string,
-          clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET as string,
-        },
-      }
-    : {},
+  socialProviders: {
+    ...(googleConfigured
+      ? {
+          google: {
+            clientId: env.GOOGLE_OAUTH_CLIENT_ID as string,
+            clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET as string,
+          },
+        }
+      : {}),
+    ...(discordConfigured
+      ? {
+          discord: {
+            clientId: env.DISCORD_OAUTH_CLIENT_ID as string,
+            clientSecret: env.DISCORD_OAUTH_CLIENT_SECRET as string,
+          },
+        }
+      : {}),
+  },
 
   user: {
     // Map better-auth's conceptual fields onto our existing column names.
@@ -213,3 +224,4 @@ export const auth = betterAuth({
 });
 
 export const isGoogleOAuthConfigured = (): boolean => googleConfigured;
+export const isDiscordOAuthConfigured = (): boolean => discordConfigured;
