@@ -718,6 +718,9 @@ const PublicProfileResponse = z
     // Public game stats. Honor is exposed as a 0-5 star count (not the
     // raw number) to read as reputation rather than judgement.
     honorStars: z.number().int().min(0).max(5),
+    // Raw 0-100 honor surfaced ONLY for the profile owner (signed-in user
+    // viewing their own page). Others see only the star count.
+    ownHonor: z.number().int().min(0).max(100).nullable(),
     calibrating: z.boolean(),
     rankedTiers: z.array(PublicTierRow),
     stats: z.object({
@@ -889,6 +892,9 @@ meRoutes.openapi(getUserRoute, async (c) => {
     socialLinks: row.socialLinks ?? {},
     createdAt: row.createdAt.toISOString(),
     honorStars,
+    // Owner-only: raw 0-100 honor for the profile owner so they see exactly
+    // how much they have. Anyone else only sees the star count.
+    ownHonor: c.var.user?.id === row.id ? row.honor : null,
     calibrating,
     rankedTiers,
     stats: {
