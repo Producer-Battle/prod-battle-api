@@ -7,6 +7,16 @@ import { and, countDistinct, gt, inArray, ne } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, sessions } from '../db/schema.js';
 
+// "Online" window: a session whose updatedAt is within this many ms is
+// considered actively present. better-auth bumps sessions.updatedAt on
+// every authenticated request, so any tab making requests (the header
+// pill polls /stats/live with credentials, the auth/get-session call from
+// useSession also fires on focus) keeps the heartbeat alive.
+//
+// 3 minutes balances "real-time enough" against "tabs that idle for a
+// minute don't disappear instantly". Tune as needed.
+const ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
 export const statsRoutes = new OpenAPIHono();
 
 const LiveStats = z
@@ -58,7 +68,12 @@ statsRoutes.openapi(route, async (c) => {
     d
       .select({ n: countDistinct(sessions.userId) })
       .from(sessions)
-      .where(gt(sessions.expiresAt, new Date()))
+      .where(
+        and(
+          gt(sessions.expiresAt, new Date()),
+          gt(sessions.updatedAt, new Date(Date.now() - ONLINE_WINDOW_MS)),
+        ),
+      )
       .then((rows) => rows[0]?.n ?? 0),
   ]);
   return c.json({
