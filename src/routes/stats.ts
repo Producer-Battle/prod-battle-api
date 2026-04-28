@@ -41,7 +41,8 @@ const route = createRoute({
 
 statsRoutes.openapi(route, async (c) => {
   const d = db();
-  const liveStatusList = LIVE_STATUSES as readonly (typeof LIVE_STATUSES)[number][] as (typeof LIVE_STATUSES)[number][];
+  const liveStatusList =
+    LIVE_STATUSES as readonly (typeof LIVE_STATUSES)[number][] as (typeof LIVE_STATUSES)[number][];
   const [battles, producers, online] = await Promise.all([
     d
       .select({ n: countDistinct(matches.id) })
