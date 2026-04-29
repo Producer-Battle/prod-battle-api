@@ -136,6 +136,14 @@ const MatchResponse = z
     // and force-advances when it expires. Null = not scheduled (waiting
     // for more players, or a mode that does not auto-fire).
     lobbyStartsAt: z.string().nullable(),
+    // Did everyone vote on (almost) every entry? Set when the match leaves
+    // vote phase. Null until results entry. Used for the "partial tally"
+    // pill on the Results UI; does not gate ranked LP updates.
+    voteOutcome: z.enum(['complete', 'incomplete']).nullable(),
+    voteStats: z.object({
+      seated: z.number().int(),
+      fullVoted: z.number().int(),
+    }),
   })
   .openapi('Match');
 
@@ -638,6 +646,8 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           }
         : null,
       lobbyStartsAt: null,
+      voteOutcome: null,
+      voteStats: { seated: 0, fullVoted: 0 },
     },
     201,
   );
@@ -679,6 +689,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       sampleMode: matches.sampleMode,
       flipSourceId: matches.flipSourceId,
       lobbyStartsAt: matches.lobbyStartsAt,
+      voteOutcomeCol: matches.voteOutcome,
     })
     .from(matches)
     .innerJoin(genres, eq(genres.id, matches.primaryGenreId))
@@ -696,6 +707,26 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
           FROM battle_phases
          WHERE match_id = ${row.id}`,
   );
+
+  // Vote-completeness count for the Results "partial tally - X of Y voted"
+  // pill. Cheap aggregate; only meaningful once the match enters/leaves the
+  // vote phase. The threshold matches the tick-worker definition: a player
+  // is "fully voted" if they scored >= seated-1 entries.
+  const [voteStatsRow] = (await d.execute<{ seated: number; full: number }>(sql`
+    WITH s AS (
+      SELECT COUNT(*)::int AS n FROM match_players
+       WHERE match_id = ${row.id} AND is_spectator = false
+    ),
+    voter_counts AS (
+      SELECT v.voter_id, COUNT(*)::int AS votes_cast
+        FROM votes v
+       WHERE v.match_id = ${row.id}
+       GROUP BY v.voter_id
+    )
+    SELECT (SELECT n FROM s)::int AS seated,
+           (SELECT COUNT(*)::int FROM voter_counts
+             WHERE votes_cast >= GREATEST((SELECT n FROM s) - 1, 0)) AS full
+  `)) as unknown as [{ seated: number; full: number }];
 
   // Load the associated sample pack if present.
   let packPayload: {
@@ -753,5 +784,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     currentPhase: phase?.current_phase ?? null,
     transitionsAt: phase ? new Date(phase.transitions_at).getTime() : null,
     lobbyStartsAt: row.lobbyStartsAt ? row.lobbyStartsAt.toISOString() : null,
+    voteOutcome: row.voteOutcomeCol ?? null,
+    voteStats: { seated: voteStatsRow?.seated ?? 0, fullVoted: voteStatsRow?.full ?? 0 },
   });
 });

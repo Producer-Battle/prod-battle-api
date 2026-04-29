@@ -183,6 +183,13 @@
       "when": 1777400004000,
       "tag": "0025_lobby_countdown",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1777400005000,
+      "tag": "0026_vote_outcome",
+      "breakpoints": true
     }
   ]
 }

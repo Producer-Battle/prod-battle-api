@@ -92,6 +92,12 @@ async function tick(): Promise<void> {
         voteOutcome = 'incomplete';
         console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) - kept`);
       }
+      // Persist so applyRankedOutcome can read it after onEnterPhase fires,
+      // and so /matches/{code} can return it for the Results UI pill.
+      await d
+        .update(matches)
+        .set({ voteOutcome })
+        .where(sql`${matches.id} = ${row.matchId}`);
     }
 
     // Determine how long the next phase lasts.

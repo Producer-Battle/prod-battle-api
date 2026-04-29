@@ -62,6 +62,7 @@ export const matchStatus = pgEnum('match_status', [
 ]);
 
 export const matchPhase = pgEnum('match_phase', ['lobby', 'submit', 'reveal', 'vote', 'results']);
+export const voteOutcome = pgEnum('vote_outcome', ['complete', 'incomplete']);
 
 export const samplePackKind = pgEnum('sample_pack_kind', ['uploaded', 'generated', 'pool']);
 
@@ -375,6 +376,12 @@ export const matches = pgTable(
     // either too few players, a mode that does not auto-fire (private/daily/
     // tournament), or a match that has already left the lobby.
     lobbyStartsAt: timestamp({ withTimezone: true }),
+
+    // Did every seated player vote on (almost) every other entry? Set by
+    // the tick worker at the vote -> results transition. NULL while the
+    // match is still pre-results. 'incomplete' suppresses ranked LP updates
+    // and surfaces a "partial tally" pill on the Results UI.
+    voteOutcome: voteOutcome(),
 
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
