@@ -72,6 +72,11 @@ const CreateMatchBody = z
     //   - kind='uploaded' packs only usable by their createdBy owner
     // The pack's genre must match body.genreSlug (or the resolved genre).
     samplePackId: z.string().uuid().optional(),
+    // Whether this match shows up in GET /lobbies. Only meaningful for
+    // private mode (other modes are public-by-default and ignore this).
+    // Defaults to false so private rooms stay invite-only unless the host
+    // ticks the "List publicly" box.
+    isPublic: z.boolean().optional(),
   })
   .refine(
     (v) =>
@@ -472,6 +477,11 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
     const effectiveTeamCount =
       body.mode === 'quickplay' || body.mode === 'ranked' ? 8 : body.teamCount;
 
+    // Visibility in /lobbies: private rooms default invite-only and only
+    // appear if the host explicitly ticks "list publicly". Every other mode
+    // is auto-discoverable, since matchmaking already shares those lobbies.
+    const isPublic = body.mode === 'private' ? body.isPublic === true : true;
+
     try {
       const [row] = await d
         .insert(matches)
@@ -485,6 +495,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           submitSeconds,
           sampleMode,
           flipSourceId: flipSource?.id ?? null,
+          isPublic,
         })
         .returning();
       created = row;

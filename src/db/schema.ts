@@ -365,6 +365,10 @@ export const matches = pgTable(
     tournamentId: uuid(),
     tournamentRound: integer(),
 
+    // Whether this match appears in GET /lobbies. True by default; private
+    // rooms default to false but can be opted in via the create form.
+    isPublic: boolean().notNull().default(true),
+
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ withTimezone: true }),

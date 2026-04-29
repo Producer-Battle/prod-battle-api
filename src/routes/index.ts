@@ -12,6 +12,7 @@ import { flipSourcesRoutes } from './flip-sources.js';
 import { genresRoutes } from './genres.js';
 import { healthRoutes } from './health.js';
 import { leaderboardRoutes } from './leaderboard.js';
+import { lobbiesRoutes } from './lobbies.js';
 import { matchesRoutes } from './matches.js';
 import { meRoutes } from './me.js';
 import { phasesRoutes } from './phases.js';
@@ -31,6 +32,7 @@ export function registerRoutes(app: OpenAPIHono): void {
   app.route('/', feedRoutes);
   app.route('/', genresRoutes);
   app.route('/', matchesRoutes);
+  app.route('/', lobbiesRoutes);
   app.route('/', roomActionsRoutes);
   app.route('/', samplePacksRoutes);
   app.route('/', submissionsRoutes);
