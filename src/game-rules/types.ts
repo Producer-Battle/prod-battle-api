@@ -5,7 +5,7 @@
 
 export type ModeKey = 'quickplay' | 'ranked' | 'private' | 'flip' | 'daily' | 'tournament';
 
-export type AbandonReason = 'lobby' | 'mid' | 'empty';
+export type AbandonReason = 'lobby' | 'mid' | 'empty' | 'no_vote';
 
 export type HonorPenaltyKey =
   | `${ModeKey}_${AbandonReason}`

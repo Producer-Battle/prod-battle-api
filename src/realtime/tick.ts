@@ -15,7 +15,7 @@ import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { sql } from 'drizzle-orm';
 import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { battlePhases, matches, votes } from '../db/schema.js';
+import { battlePhases, matches } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { nextPhase } from '../room/state.js';
 import { VOTE_SECONDS_DEFAULT, computeVoteDuration, onEnterPhase } from '../room/transitions.js';
@@ -64,10 +64,11 @@ async function tick(): Promise<void> {
       continue;
     }
 
-    // When the vote phase times out, check if everyone voted.
-    // maybeAdvanceAfterVote fires early when the threshold is met; reaching
-    // this branch on the timer means some players didn't vote in time.
-    // We discard the accrued votes so tallyResults assigns no winner.
+    // When the vote phase times out, check if every seated player voted on
+    // (almost) every other entry. We keep the partial votes - tallyResults
+    // ranks by whatever was cast - and just flag the match so results UIs
+    // can show "incomplete vote". Per-player no-vote honor penalties are
+    // applied later by applyMatchOutcome, see honor/outcomes.ts.
     let voteOutcome: 'complete' | 'incomplete' = 'complete';
     if (row.currentPhase === 'vote' && next === 'results') {
       const outcomeRows = (await d.execute<{ seated: number; full: number }>(sql`
@@ -89,8 +90,7 @@ async function tick(): Promise<void> {
       const full = outcomeRows[0]?.full ?? 0;
       if (seated > 0 && full < seated) {
         voteOutcome = 'incomplete';
-        await d.delete(votes).where(sql`${votes.matchId} = ${row.matchId}`);
-        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) - discarded`);
+        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) - kept`);
       }
     }
 

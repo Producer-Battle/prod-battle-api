@@ -30,6 +30,18 @@ const ABANDONABLE_MODES: ReadonlySet<string> = new Set([
   'tournament',
 ]);
 
+// Per-mode default no-vote penalty (when no admin override is in game_rules).
+// Small enough to be forgiving on first offence (halved by the existing
+// forgiveness ladder) but big enough that habitual ghost-voters slide.
+const NO_VOTE_PENALTY_FALLBACK: Record<ModeKey, number> = {
+  quickplay: -2,
+  ranked: -3,
+  private: -1,
+  flip: -2,
+  daily: 0, // daily voting happens async, no per-match accountability
+  tournament: -3,
+};
+
 function modeKeyFor(mode: string): ModeKey {
   if (ABANDONABLE_MODES.has(mode)) return mode as ModeKey;
   // Fallback to quickplay so we always have a valid penalty key.
@@ -57,12 +69,46 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
         SELECT 1 FROM submissions s
         WHERE s.match_id = ${matchId} AND s.user_id = ${matchPlayers.userId}
       )`,
+      // Number of distinct submissions this player voted on for this match.
+      // Used below to flag "submitted but did not vote on others" - those
+      // get a small honor penalty so the audience-vote phase actually pulls
+      // its weight even when nobody is around to chase voters.
+      votesCast: sql<number>`COALESCE((
+        SELECT COUNT(*)::int FROM votes
+         WHERE match_id = ${matchId}
+           AND voter_id = ${matchPlayers.userId}
+      ), 0)`,
     })
     .from(matchPlayers)
     .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.isSpectator, false)));
 
+  // Voter must have scored at least N-1 entries (everyone but themselves).
+  const seatedCount = players.length;
+  const fullVoteThreshold = Math.max(0, seatedCount - 1);
+
   for (const p of players) {
     if (p.honorDelta !== 0) continue; // already adjusted by mid-match grace
+
+    const fullyVoted = Number(p.votesCast) >= fullVoteThreshold;
+
+    if (p.hasSubmission && !p.abandoned && !fullyVoted) {
+      // Submitted but ghosted on the vote phase. Small honor hit so the
+      // soft-tally policy (we keep partial votes) does not become a free
+      // ride. Reuses the first-offence forgiveness ladder.
+      const penaltyKey = `${modeKey}_no_vote` as const;
+      const rawPenalty = honorRules.penalties[penaltyKey] ?? NO_VOTE_PENALTY_FALLBACK[modeKey];
+      const penalty = await applyFirstOffenceForgiveness(p.userId, rawPenalty, honorRules);
+
+      await d
+        .update(matchPlayers)
+        .set({ honorDelta: penalty })
+        .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.userId, p.userId)));
+      await d
+        .update(users)
+        .set({ honor: sql`GREATEST(${users.honor} + ${penalty}, 0)` })
+        .where(eq(users.id, p.userId));
+      continue;
+    }
 
     if (p.hasSubmission && !p.abandoned) {
       // Clean completion: regen +1 (capped), record completed_at.
