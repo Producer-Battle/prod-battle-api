@@ -369,6 +369,13 @@ export const matches = pgTable(
     // rooms default to false but can be opted in via the create form.
     isPublic: boolean().notNull().default(true),
 
+    // When the auto-start countdown will fire (lobby -> submit). Set by the
+    // tick orchestrator when seated >= AUTO_START_MIN_PLAYERS for the
+    // applicable modes (quickplay/ranked/flip). NULL means "not scheduled" -
+    // either too few players, a mode that does not auto-fire (private/daily/
+    // tournament), or a match that has already left the lobby.
+    lobbyStartsAt: timestamp({ withTimezone: true }),
+
     // Lifecycle
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ withTimezone: true }),

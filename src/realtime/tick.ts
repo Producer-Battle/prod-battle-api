@@ -1147,6 +1147,133 @@ async function weeklyTournamentScan(): Promise<void> {
   });
 }
 
+// ─── Lobby auto-start orchestrator ──────────────────────────────────────
+//
+// Drives the lobby -> submit transition for the modes where producers
+// arrive ad-hoc (quickplay/ranked/flip). Private/daily/tournament are
+// host- or scheduler-driven and intentionally untouched.
+//
+// State machine, evaluated each tick per match in status='lobby':
+//   * seated >= capacity                                  -> start now
+//   * seated >= AUTO_START_MIN, lobby_starts_at IS NULL   -> set to now+90s
+//   * seated <  COUNTDOWN_KEEP_MIN, lobby_starts_at != NULL -> clear
+//   * lobby_starts_at <= now()                            -> start now
+
+const AUTO_START_MIN = 3; // seated count that arms the 90s countdown
+const COUNTDOWN_KEEP_MIN = 2; // drop below this -> cancel, wait again
+const COUNTDOWN_SECONDS = 90;
+
+async function lobbyOrchestrator(): Promise<void> {
+  const d = db();
+  const now = new Date();
+
+  // One sweep per tick. Pulls every active lobby (qp/ranked/flip) with the
+  // stats we need to decide. Bounded - normally a handful of rows.
+  const rows = await d.execute<{
+    id: string;
+    capacity: number;
+    seated: number;
+    lobby_starts_at: string | null;
+    submit_seconds: number | null;
+    mode: 'quickplay' | 'ranked' | 'flip';
+  }>(
+    sql`SELECT m.id,
+               (m.team_size * m.team_count) AS capacity,
+               COALESCE(p.seated, 0)::int AS seated,
+               m.lobby_starts_at,
+               m.submit_seconds,
+               m.mode
+          FROM matches m
+          LEFT JOIN (
+            SELECT match_id, COUNT(*)::int AS seated
+              FROM match_players
+             WHERE is_spectator = false
+             GROUP BY match_id
+          ) p ON p.match_id = m.id
+         WHERE m.status = 'lobby'
+           AND m.mode IN ('quickplay', 'ranked', 'flip')`,
+  );
+
+  for (const r of rows) {
+    const seated = Number(r.seated);
+    const dueAt = r.lobby_starts_at ? new Date(r.lobby_starts_at) : null;
+    const fullCapacity = seated >= r.capacity;
+    const expired = dueAt !== null && dueAt.getTime() <= now.getTime();
+
+    if (fullCapacity || expired) {
+      await startLobbyMatch(r.id, r.mode, r.submit_seconds);
+      continue;
+    }
+
+    if (seated >= AUTO_START_MIN && !dueAt) {
+      const startsAt = new Date(now.getTime() + COUNTDOWN_SECONDS * 1000);
+      await d
+        .update(matches)
+        .set({ lobbyStartsAt: startsAt })
+        .where(sql`${matches.id} = ${r.id} AND ${matches.lobbyStartsAt} IS NULL`);
+      await publish(`battle:${r.id}`, {
+        type: 'lobby_countdown',
+        matchId: r.id,
+        lobbyStartsAt: startsAt.getTime(),
+      });
+      continue;
+    }
+
+    if (seated < COUNTDOWN_KEEP_MIN && dueAt) {
+      await d
+        .update(matches)
+        .set({ lobbyStartsAt: null })
+        .where(sql`${matches.id} = ${r.id} AND ${matches.lobbyStartsAt} IS NOT NULL`);
+      await publish(`battle:${r.id}`, {
+        type: 'lobby_countdown',
+        matchId: r.id,
+        lobbyStartsAt: null,
+      });
+    }
+  }
+}
+
+// Force-advance a lobby into the submit phase. Mirrors the manual
+// POST /rooms/:code/start endpoint: writes a battle_phases row, flips
+// match.status, clears the countdown, and pubsubs phase_change.
+async function startLobbyMatch(
+  matchId: string,
+  mode: 'quickplay' | 'ranked' | 'flip',
+  submitSecondsOverride: number | null,
+): Promise<void> {
+  const d = db();
+  const submitSeconds =
+    submitSecondsOverride ??
+    SUBMIT_SECONDS_DEFAULT[mode as keyof typeof SUBMIT_SECONDS_DEFAULT] ??
+    300;
+  const transitionsAt = new Date(Date.now() + submitSeconds * 1000);
+
+  await d
+    .insert(battlePhases)
+    .values({
+      matchId,
+      currentPhase: 'submit',
+      transitionsAt,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: battlePhases.matchId,
+      set: { currentPhase: 'submit', transitionsAt, updatedAt: new Date() },
+    });
+
+  await d
+    .update(matches)
+    .set({ status: 'submit', startedAt: new Date(), lobbyStartsAt: null })
+    .where(sql`${matches.id} = ${matchId} AND ${matches.status} = 'lobby'`);
+
+  await publish(`battle:${matchId}`, {
+    type: 'phase_change',
+    matchId,
+    phase: 'submit',
+    transitionsAt: transitionsAt.getTime(),
+  });
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -1158,6 +1285,9 @@ export function startTickLoop(): () => void {
     // Called once we become leader. Start the 1s tick interval.
     tickTimer = setInterval(() => {
       tick().catch((err: Error) => console.error('[tick] error:', err.message));
+      lobbyOrchestrator().catch((err: Error) =>
+        console.error('[lobby-orchestrator] error:', err.message),
+      );
       dailyRolloverCheck().catch((err: Error) =>
         console.error('[tick] daily rollover error:', err.message),
       );

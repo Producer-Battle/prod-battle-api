@@ -131,6 +131,11 @@ const MatchResponse = z
     // battle_phases row exists (i.e. match has left the lobby).
     currentPhase: z.string().nullable(),
     transitionsAt: z.number().int().nullable(),
+    // When the auto-start countdown will fire (lobby phase only). The
+    // tick orchestrator schedules this once seated >= 3 in qp/ranked/flip
+    // and force-advances when it expires. Null = not scheduled (waiting
+    // for more players, or a mode that does not auto-fire).
+    lobbyStartsAt: z.string().nullable(),
   })
   .openapi('Match');
 
@@ -632,6 +637,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
             durationSec: flipSource.durationSec ?? null,
           }
         : null,
+      lobbyStartsAt: null,
     },
     201,
   );
@@ -672,6 +678,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       samplePackId: matches.samplePackId,
       sampleMode: matches.sampleMode,
       flipSourceId: matches.flipSourceId,
+      lobbyStartsAt: matches.lobbyStartsAt,
     })
     .from(matches)
     .innerJoin(genres, eq(genres.id, matches.primaryGenreId))
@@ -745,5 +752,6 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     flipSource: flipSourcePayload,
     currentPhase: phase?.current_phase ?? null,
     transitionsAt: phase ? new Date(phase.transitions_at).getTime() : null,
+    lobbyStartsAt: row.lobbyStartsAt ? row.lobbyStartsAt.toISOString() : null,
   });
 });

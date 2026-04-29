@@ -176,6 +176,13 @@
       "when": 1777400003000,
       "tag": "0024_match_is_public",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1777400004000,
+      "tag": "0025_lobby_countdown",
+      "breakpoints": true
     }
   ]
 }

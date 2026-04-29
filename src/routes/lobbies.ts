@@ -39,6 +39,7 @@ const lobbiesListRoute = createRoute({
                 playerCount: z.number().int(),
                 capacity: z.number().int(),
                 createdAt: z.string(),
+                lobbyStartsAt: z.string().nullable(),
               }),
             ),
           }),
@@ -61,6 +62,7 @@ lobbiesRoutes.openapi(lobbiesListRoute, async (c) => {
     player_count: string;
     capacity: number;
     created_at: string;
+    lobby_starts_at: string | null;
   }>(
     sql`SELECT m.id AS match_id,
                m.room_code,
@@ -70,7 +72,8 @@ lobbiesRoutes.openapi(lobbiesListRoute, async (c) => {
                u.handle AS host_handle,
                COUNT(mp.user_id) AS player_count,
                (m.team_size * m.team_count) AS capacity,
-               m.created_at
+               m.created_at,
+               m.lobby_starts_at
           FROM matches m
           JOIN genres g ON g.id = m.primary_genre_id
           LEFT JOIN users u ON u.id = m.host_id
@@ -93,6 +96,7 @@ lobbiesRoutes.openapi(lobbiesListRoute, async (c) => {
       playerCount: Number(r.player_count),
       capacity: r.capacity,
       createdAt: new Date(r.created_at).toISOString(),
+      lobbyStartsAt: r.lobby_starts_at ? new Date(r.lobby_starts_at).toISOString() : null,
     })),
   });
 });
