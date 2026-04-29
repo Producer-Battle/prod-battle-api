@@ -169,6 +169,13 @@
       "when": 1777400002000,
       "tag": "0023_supporter_perks",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1777400003000,
+      "tag": "0024_match_is_public",
+      "breakpoints": true
     }
   ]
 }
