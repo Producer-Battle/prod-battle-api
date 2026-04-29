@@ -30,7 +30,7 @@ function randomId(): string {
  * Attempt to acquire `key` as leader, then call `onBecomeLeader`.
  * Renews every 2s; if renewal fails (another process took over),
  * stops renewing and never calls `onBecomeLeader` again until the
- * next acquisition cycle (handled by the caller – see tick.ts).
+ * next acquisition cycle (handled by the caller - see tick.ts).
  *
  * Returns a stop function that cancels the election loop.
  */

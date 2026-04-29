@@ -303,8 +303,8 @@ export const flipSources = pgTable('flip_sources', {
  *   Practice → team_size=1, team_count=1   (solo)
  *   1v1      → team_size=1, team_count=2   (2 players)
  *   2v2      → team_size=2, team_count=2   (4 players)
- *   …up to 5v5 → team_size=5, team_count=2 (10 players)
- *   FFA      → team_size=1, team_count=N in 3..8 (everyone solo, "1v1v1…")
+ *   ...up to 5v5 → team_size=5, team_count=2 (10 players)
+ *   FFA      → team_size=1, team_count=N in 3..8 (everyone solo, "1v1v1...")
  *
  * Genres: every match has a primary_genre_id. Private rooms can additionally
  * allow a rotation pool via `allowed_genre_ids` (host-selected). Ranked/quickplay
@@ -654,7 +654,7 @@ export const accounts = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     accountId: text().notNull(), // provider user id (google sub, or email for credentials)
-    providerId: text().notNull(), // 'credential' | 'google' | …
+    providerId: text().notNull(), // 'credential' | 'google' | ...
     accessToken: text(),
     refreshToken: text(),
     idToken: text(),

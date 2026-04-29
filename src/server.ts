@@ -47,7 +47,7 @@ app.use('/auth/sign-up/*', requireSignupQuota());
 app.use('/auth/callback/*', requireSignupQuota());
 
 // better-auth mounts its entire surface area (/sign-in, /sign-up, /session,
-// /verify-email, OAuth callbacks, …) at this one handler. Must be
+// /verify-email, OAuth callbacks, ...) at this one handler. Must be
 // registered BEFORE attachSession so the session cookie set by /sign-up
 // is available on the same response.
 //
@@ -101,7 +101,7 @@ const stopTick = startTickLoop();
 const stopGenrePromotion = startGenrePromotionLoop();
 
 const shutdown = (signal: string) => {
-  console.log(`[prod-battle-api] ${signal} received, draining…`);
+  console.log(`[prod-battle-api] ${signal} received, draining...`);
   stopTick();
   stopGenrePromotion();
   server.close(() => process.exit(0));

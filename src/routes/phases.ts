@@ -16,7 +16,7 @@ import { computeVoteWeight } from '../voting/weight.js';
 export const phasesRoutes = new OpenAPIHono();
 
 // ─── GET /matches/:code/reveal ───────────────────────────────────────────
-// Returns the submissions for this match, ANONYMIZED (Entry A, Entry B…),
+// Returns the submissions for this match, ANONYMIZED (Entry A, Entry B...),
 // in a stable but non-ordered-by-submitter order so Alice and Bob see the
 // same sequence. Identities are revealed via /results once voting closes.
 

@@ -26,7 +26,7 @@ export type SystemGenreSeed = {
 
 // Durations roughly matched to each style's typical flip:
 //   short bangers (phonk, drill, trap)  → 5-min submit
-//   arrangement-heavy (house, DnB)      → 10–15-min submit
+//   arrangement-heavy (house, DnB)      → 10-15-min submit
 //   dense sound design (dubstep, hard)  → 10-min submit
 const mp3wav = ['audio/mpeg', 'audio/wav'];
 const short = { submission: { maxSeconds: 60, fileTypes: mp3wav } } as const;
