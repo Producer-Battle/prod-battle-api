@@ -59,37 +59,46 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
 
   const modeKey = modeKeyFor(m.mode);
 
-  // Walk seated, non-spectator players. Skip ones we've already touched.
-  const players = await d
-    .select({
-      userId: matchPlayers.userId,
-      abandoned: matchPlayers.abandoned,
-      honorDelta: matchPlayers.honorDelta,
-      hasSubmission: sql<boolean>`EXISTS (
-        SELECT 1 FROM submissions s
-        WHERE s.match_id = ${matchId} AND s.user_id = ${matchPlayers.userId}
-      )`,
-      // Number of distinct submissions this player voted on for this match.
-      // Used below to flag "submitted but did not vote on others" - those
-      // get a small honor penalty so the audience-vote phase actually pulls
-      // its weight even when nobody is around to chase voters.
-      votesCast: sql<number>`COALESCE((
-        SELECT COUNT(*)::int FROM votes
-         WHERE match_id = ${matchId}
-           AND voter_id = ${matchPlayers.userId}
-      ), 0)`,
-    })
-    .from(matchPlayers)
-    .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.isSpectator, false)));
-
-  // Voter must have scored at least N-1 entries (everyone but themselves).
-  const seatedCount = players.length;
-  const fullVoteThreshold = Math.max(0, seatedCount - 1);
+  // Walk seated, non-spectator players. Per-row votable = how many other
+  // submissions exist that aren't this player's own. Voter is "fully
+  // voted" if they cast votes on every one of them. Single raw query so
+  // both correlated subqueries see the outer match_players row reliably.
+  type PlayerRow = {
+    user_id: string;
+    abandoned: boolean;
+    honor_delta: number;
+    has_submission: boolean;
+    votes_cast: number;
+    votable_count: number;
+  };
+  const players = (
+    (await d.execute<PlayerRow>(
+      sql`SELECT mp.user_id,
+                mp.abandoned,
+                mp.honor_delta,
+                EXISTS (SELECT 1 FROM submissions s
+                         WHERE s.match_id = ${matchId} AND s.user_id = mp.user_id) AS has_submission,
+                COALESCE((SELECT COUNT(*)::int FROM votes v
+                           WHERE v.match_id = ${matchId} AND v.voter_id = mp.user_id), 0) AS votes_cast,
+                (SELECT COUNT(*)::int FROM submissions s
+                  WHERE s.match_id = ${matchId} AND s.user_id != mp.user_id) AS votable_count
+           FROM match_players mp
+          WHERE mp.match_id = ${matchId} AND mp.is_spectator = false`,
+    )) as PlayerRow[]
+  ).map((r) => ({
+    userId: r.user_id,
+    abandoned: r.abandoned,
+    honorDelta: Number(r.honor_delta),
+    hasSubmission: r.has_submission,
+    votesCast: Number(r.votes_cast),
+    votableCount: Number(r.votable_count),
+  }));
 
   for (const p of players) {
     if (p.honorDelta !== 0) continue; // already adjusted by mid-match grace
 
-    const fullyVoted = Number(p.votesCast) >= fullVoteThreshold;
+    const votable = p.votableCount;
+    const fullyVoted = votable === 0 || p.votesCast >= votable;
 
     if (p.hasSubmission && !p.abandoned && !fullyVoted) {
       // Submitted but ghosted on the vote phase. Small honor hit so the

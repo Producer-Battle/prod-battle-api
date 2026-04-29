@@ -145,6 +145,17 @@ export async function computeVoteDuration(
  */
 export async function onEnterPhase(matchId: string, phase: Phase): Promise<void> {
   if (phase === 'results') {
+    // Default voteOutcome to 'complete' if the tick worker did not already
+    // mark it 'incomplete'. The early-advance path (maybeAdvanceAfterVote
+    // when every voter has finished) skips the tick branch, so without
+    // this fallback voteOutcome would stay NULL forever and the Results
+    // UI couldn't tell a complete vote from an unfinished one.
+    const d = db();
+    await d
+      .update(matches)
+      .set({ voteOutcome: 'complete' })
+      .where(sql`${matches.id} = ${matchId} AND ${matches.voteOutcome} IS NULL`);
+
     await tallyResults(matchId);
     // Honor accounting: regen for clean completers, abandon-penalty for
     // anyone who failed to submit. Must run AFTER tallyResults so the

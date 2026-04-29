@@ -76,6 +76,70 @@ describe('mode: quickplay', () => {
 
     const final = await getMatch(app, match.roomCode);
     expect(final.status).toBe('results');
+    // Regression: voteStats should reflect actual voting activity.
+    // 4 seated; each voter cast 3 votes (everyone except self); threshold
+    // for fullVoted is N-1 = 3. So all four are fully-voted AND voted.
+    // Bug we fixed: a 3-player room where 2 voted on each other showed
+    // 0/3 because the pill was using the strict fullVoted count.
+    expect(final.voteStats.seated).toBe(4);
+    expect(final.voteStats.voted).toBe(4);
+    expect(final.voteStats.fullVoted).toBe(4);
+    expect(final.voteOutcome).toBe('complete');
+  });
+
+  it('honor: 2 vote, 1 ghosts; ghost takes a small honor hit, 2 voters keep theirs', async () => {
+    // Reproducing the user-reported flow: 3-player room, everyone submits,
+    // two vote on every other entry, the third never votes. The two who
+    // did the right thing must NOT be docked. Only the ghost-voter loses
+    // honor.
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const handles = ['alpha', 'beta', 'gamma'].map((p) => uniqueHandle(`vote-${p}`));
+    for (const h of handles) await joinRoom(app, match.roomCode, h);
+    const host = handles[0];
+    if (!host) throw new Error('handles empty');
+    await startRoom(app, match.roomCode, host);
+
+    const ownByHandle = new Map<string, string>();
+    for (const h of handles) ownByHandle.set(h, await submitTrack(app, match.roomCode, h));
+
+    const reveal = await getReveal(app, match.roomCode);
+    // Two voters do the full slate. The third never calls /vote.
+    const [voterA, voterB, ghost] = handles as [string, string, string];
+    await voteForAll(app, match.roomCode, voterA, ownByHandle.get(voterA) ?? null, reveal);
+    await voteForAll(app, match.roomCode, voterB, ownByHandle.get(voterB) ?? null, reveal);
+
+    // maybeAdvanceAfterVote will not fire (3rd voter is missing). Force the
+    // tick path manually: jump the vote-phase timer to "now-1s" and let
+    // tick.ts move the match to results. Direct DB manipulation is fine
+    // in tests.
+    const { db } = await import('../../db/client.js');
+    const { sql } = await import('drizzle-orm');
+    await db().execute(
+      sql`UPDATE battle_phases SET transitions_at = now() - interval '1 second' WHERE match_id = ${match.id}`,
+    );
+    // Drive one tick by importing the inner advancePhase via the module.
+    // Simpler: call applyMatchOutcome directly to exercise the honor path
+    // we want to verify. This skips the phase_change pubsub but gets the
+    // matchPlayers honor_delta written, which is what the test asserts.
+    const { applyMatchOutcome } = await import('../../honor/outcomes.js');
+    await db().execute(
+      sql`UPDATE matches SET status = 'results', vote_outcome = 'incomplete' WHERE id = ${match.id}`,
+    );
+    await applyMatchOutcome(match.id);
+
+    // Pull honor deltas. Voters who completed should be at +1; ghost
+    // should be negative (the no_vote penalty, halved by first-offence).
+    const rows = (await db().execute<{ handle: string; honor_delta: number }>(
+      sql`SELECT u.handle, mp.honor_delta
+            FROM match_players mp
+            JOIN users u ON u.id = mp.user_id
+           WHERE mp.match_id = ${match.id}`,
+    )) as Array<{ handle: string; honor_delta: number }>;
+    const deltaByHandle = new Map(rows.map((r) => [r.handle, Number(r.honor_delta)]));
+
+    expect(deltaByHandle.get(voterA)).toBeGreaterThan(0);
+    expect(deltaByHandle.get(voterB)).toBeGreaterThan(0);
+    expect(deltaByHandle.get(ghost)).toBeLessThan(0);
   });
 
   it('rejects /start with waiting_for_players when fewer than 2 are seated', async () => {

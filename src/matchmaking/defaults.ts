@@ -27,8 +27,8 @@ export type MatchMode =
 //   tournament - production round; longer, more polished submissions
 //   practice   - relaxed, no pressure
 export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
-  quickplay: 300, // 5 min
-  ranked: 600, // 10 min
+  quickplay: 600, // 10 min
+  ranked: 1200, // 20 min
   private: 600, // fallback if host didn't pick (shouldn't happen)
   tournament: 1800, // 30 min
   practice: 900, // 15 min

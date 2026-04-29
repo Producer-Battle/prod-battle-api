@@ -38,6 +38,11 @@ const revealRoute = createRoute({
                 label: z.string(), // "Entry A"
                 audioUrl: z.string().url(),
                 durationSec: z.number().int().nullable(),
+                // True only for the caller's own submission. Lets the
+                // client disable scoring on their own track so they cant
+                // 5-star themselves. Server still drops self-votes
+                // silently if the client tries.
+                isOwn: z.boolean(),
               }),
             ),
           }),
@@ -50,6 +55,7 @@ const revealRoute = createRoute({
 
 phasesRoutes.openapi(revealRoute, async (c) => {
   const { code } = c.req.valid('param');
+  const callerId = c.var.user?.id ?? null;
   const d = db();
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return c.json({ error: 'match not found' }, 404);
@@ -57,6 +63,7 @@ phasesRoutes.openapi(revealRoute, async (c) => {
   const rows = await d
     .select({
       id: submissions.id,
+      userId: submissions.userId,
       audioUrl: submissions.audioUrl,
       durationSec: submissions.durationSec,
     })
@@ -70,6 +77,7 @@ phasesRoutes.openapi(revealRoute, async (c) => {
       label: `Entry ${String.fromCharCode(65 + i)}`,
       audioUrl: await signUrl(r.audioUrl, 3600),
       durationSec: r.durationSec,
+      isOwn: callerId !== null && r.userId === callerId,
     })),
   );
 

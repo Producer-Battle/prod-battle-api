@@ -79,10 +79,13 @@ feedRoutes.openapi(route, async (c) => {
     .from(submissions)
     .innerJoin(users, eq(users.id, submissions.userId))
     .innerJoin(genres, eq(genres.id, submissions.genreId))
+    // Winners only on the feed: anything that finished in 1st place. Other
+    // entries stay on producer profiles, just not in the global discovery
+    // feed (keeps the feed signal high - only beats that beat the room).
     .where(
       genre
-        ? and(eq(submissions.isPublic, true), eq(genres.slug, genre))
-        : eq(submissions.isPublic, true),
+        ? and(eq(submissions.isPublic, true), eq(submissions.finalRank, 1), eq(genres.slug, genre))
+        : and(eq(submissions.isPublic, true), eq(submissions.finalRank, 1)),
     )
     .orderBy(desc(submissions.createdAt))
     .limit(limit);

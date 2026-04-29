@@ -200,14 +200,14 @@ export async function getResults(app: OpenAPIHono, code: string): Promise<Result
   return json.items;
 }
 
-export async function getMatch(
-  app: OpenAPIHono,
-  code: string,
-): Promise<CreatedMatch & { currentPhase: string | null }> {
-  const { status, json } = await getJson<CreatedMatch & { currentPhase: string | null }>(
-    app,
-    `/matches/${code}`,
-  );
+export type FetchedMatch = CreatedMatch & {
+  currentPhase: string | null;
+  voteOutcome: 'complete' | 'incomplete' | null;
+  voteStats: { seated: number; voted: number; fullVoted: number };
+};
+
+export async function getMatch(app: OpenAPIHono, code: string): Promise<FetchedMatch> {
+  const { status, json } = await getJson<FetchedMatch>(app, `/matches/${code}`);
   if (status !== 200) {
     throw new Error(`get match failed: ${status} ${JSON.stringify(json)}`);
   }

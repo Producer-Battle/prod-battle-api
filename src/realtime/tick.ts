@@ -65,32 +65,37 @@ async function tick(): Promise<void> {
     }
 
     // When the vote phase times out, check if every seated player voted on
-    // (almost) every other entry. We keep the partial votes - tallyResults
-    // ranks by whatever was cast - and just flag the match so results UIs
-    // can show "incomplete vote". Per-player no-vote honor penalties are
-    // applied later by applyMatchOutcome, see honor/outcomes.ts.
+    // every track they were able to (i.e. all non-self submissions). We
+    // keep the partial votes - tallyResults ranks by whatever was cast -
+    // and just flag the match so results UIs can show "incomplete vote".
+    // Per-player no-vote honor penalties are applied later by
+    // applyMatchOutcome, see honor/outcomes.ts.
+    //
+    // Threshold is per-voter: votes_cast >= (#submissions - 1 if the voter
+    // submitted, else #submissions). Players who didn't submit count as
+    // "abandoned" for outcome purposes but their non-vote still trips the
+    // incomplete flag if there were votable tracks they ignored.
     let voteOutcome: 'complete' | 'incomplete' = 'complete';
     if (row.currentPhase === 'vote' && next === 'results') {
-      const outcomeRows = (await d.execute<{ seated: number; full: number }>(sql`
-        WITH s AS (
-          SELECT COUNT(*)::int AS n FROM match_players
-           WHERE match_id = ${row.matchId} AND is_spectator = false
-        ),
-        voter_counts AS (
-          SELECT v.voter_id, COUNT(*)::int AS votes_cast
-            FROM votes v
-           WHERE v.match_id = ${row.matchId}
-           GROUP BY v.voter_id
+      const outcomeRows = (await d.execute<{ seated: number; missing: number }>(sql`
+        WITH per_voter AS (
+          SELECT mp.user_id AS voter_id,
+                 (SELECT COUNT(*)::int FROM submissions s
+                   WHERE s.match_id = ${row.matchId} AND s.user_id != mp.user_id) AS votable,
+                 COALESCE((SELECT COUNT(*)::int FROM votes v
+                            WHERE v.match_id = ${row.matchId} AND v.voter_id = mp.user_id), 0) AS votes_cast
+            FROM match_players mp
+           WHERE mp.match_id = ${row.matchId} AND mp.is_spectator = false
         )
-        SELECT (SELECT n FROM s)::int AS seated,
-               (SELECT COUNT(*)::int FROM voter_counts
-                 WHERE votes_cast >= GREATEST((SELECT n FROM s) - 1, 0)) AS full
-      `)) as unknown as [{ seated: number; full: number }];
+        SELECT COUNT(*)::int AS seated,
+               COUNT(*) FILTER (WHERE votable > 0 AND votes_cast < votable)::int AS missing
+          FROM per_voter
+      `)) as unknown as [{ seated: number; missing: number }];
       const seated = outcomeRows[0]?.seated ?? 0;
-      const full = outcomeRows[0]?.full ?? 0;
-      if (seated > 0 && full < seated) {
+      const missing = outcomeRows[0]?.missing ?? 0;
+      if (seated > 0 && missing > 0) {
         voteOutcome = 'incomplete';
-        console.log(`[tick] ${row.matchId}: vote incomplete (${full}/${seated}) - kept`);
+        console.log(`[tick] ${row.matchId}: vote incomplete (${missing} short) - kept`);
       }
       // Persist so applyRankedOutcome can read it after onEnterPhase fires,
       // and so /matches/{code} can return it for the Results UI pill.
@@ -1176,6 +1181,7 @@ async function lobbyOrchestrator(): Promise<void> {
     id: string;
     capacity: number;
     seated: number;
+    ready_count: number;
     lobby_starts_at: string | null;
     submit_seconds: number | null;
     mode: 'quickplay' | 'ranked' | 'flip';
@@ -1183,12 +1189,15 @@ async function lobbyOrchestrator(): Promise<void> {
     sql`SELECT m.id,
                (m.team_size * m.team_count) AS capacity,
                COALESCE(p.seated, 0)::int AS seated,
+               COALESCE(p.ready_count, 0)::int AS ready_count,
                m.lobby_starts_at,
                m.submit_seconds,
                m.mode
           FROM matches m
           LEFT JOIN (
-            SELECT match_id, COUNT(*)::int AS seated
+            SELECT match_id,
+                   COUNT(*)::int AS seated,
+                   COUNT(*) FILTER (WHERE ready)::int AS ready_count
               FROM match_players
              WHERE is_spectator = false
              GROUP BY match_id
@@ -1199,11 +1208,16 @@ async function lobbyOrchestrator(): Promise<void> {
 
   for (const r of rows) {
     const seated = Number(r.seated);
+    const ready = Number(r.ready_count);
     const dueAt = r.lobby_starts_at ? new Date(r.lobby_starts_at) : null;
     const fullCapacity = seated >= r.capacity;
     const expired = dueAt !== null && dueAt.getTime() <= now.getTime();
+    // Skip the countdown when the room reaches the auto-fire min AND every
+    // seated producer has clicked Ready. Lets a friend group fire instantly
+    // instead of staring at 90s of timer.
+    const everyoneReady = seated >= COUNTDOWN_KEEP_MIN && ready >= seated;
 
-    if (fullCapacity || expired) {
+    if (fullCapacity || expired || everyoneReady) {
       await startLobbyMatch(r.id, r.mode, r.submit_seconds);
       continue;
     }

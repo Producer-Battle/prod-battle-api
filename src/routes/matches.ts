@@ -142,6 +142,7 @@ const MatchResponse = z
     voteOutcome: z.enum(['complete', 'incomplete']).nullable(),
     voteStats: z.object({
       seated: z.number().int(),
+      voted: z.number().int(),
       fullVoted: z.number().int(),
     }),
   })
@@ -647,7 +648,7 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
         : null,
       lobbyStartsAt: null,
       voteOutcome: null,
-      voteStats: { seated: 0, fullVoted: 0 },
+      voteStats: { seated: 0, voted: 0, fullVoted: 0 },
     },
     201,
   );
@@ -708,25 +709,28 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
          WHERE match_id = ${row.id}`,
   );
 
-  // Vote-completeness count for the Results "partial tally - X of Y voted"
-  // pill. Cheap aggregate; only meaningful once the match enters/leaves the
-  // vote phase. The threshold matches the tick-worker definition: a player
-  // is "fully voted" if they scored >= seated-1 entries.
-  const [voteStatsRow] = (await d.execute<{ seated: number; full: number }>(sql`
-    WITH s AS (
-      SELECT COUNT(*)::int AS n FROM match_players
-       WHERE match_id = ${row.id} AND is_spectator = false
-    ),
-    voter_counts AS (
-      SELECT v.voter_id, COUNT(*)::int AS votes_cast
-        FROM votes v
-       WHERE v.match_id = ${row.id}
-       GROUP BY v.voter_id
+  // Vote-completeness counts for the Results "partial tally" pill. Two
+  // numbers we surface:
+  //   - voted: any seated player who cast at least one vote.
+  //   - fullVoted: voters who scored every non-self submission they had
+  //     access to (per-voter votable count, since not everyone submits).
+  // Self-votes are dropped server-side so the per-voter threshold is
+  // (total submissions) - (1 if the voter submitted, else 0).
+  const [voteStatsRow] = (await d.execute<{ seated: number; voted: number; full: number }>(sql`
+    WITH per_voter AS (
+      SELECT mp.user_id AS voter_id,
+             (SELECT COUNT(*)::int FROM submissions s
+               WHERE s.match_id = ${row.id} AND s.user_id != mp.user_id) AS votable,
+             COALESCE((SELECT COUNT(*)::int FROM votes v
+                        WHERE v.match_id = ${row.id} AND v.voter_id = mp.user_id), 0) AS votes_cast
+        FROM match_players mp
+       WHERE mp.match_id = ${row.id} AND mp.is_spectator = false
     )
-    SELECT (SELECT n FROM s)::int AS seated,
-           (SELECT COUNT(*)::int FROM voter_counts
-             WHERE votes_cast >= GREATEST((SELECT n FROM s) - 1, 0)) AS full
-  `)) as unknown as [{ seated: number; full: number }];
+    SELECT COUNT(*)::int AS seated,
+           COUNT(*) FILTER (WHERE votes_cast >= 1)::int AS voted,
+           COUNT(*) FILTER (WHERE votable = 0 OR votes_cast >= votable)::int AS full
+      FROM per_voter
+  `)) as unknown as [{ seated: number; voted: number; full: number }];
 
   // Load the associated sample pack if present.
   let packPayload: {
@@ -785,6 +789,10 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     transitionsAt: phase ? new Date(phase.transitions_at).getTime() : null,
     lobbyStartsAt: row.lobbyStartsAt ? row.lobbyStartsAt.toISOString() : null,
     voteOutcome: row.voteOutcomeCol ?? null,
-    voteStats: { seated: voteStatsRow?.seated ?? 0, fullVoted: voteStatsRow?.full ?? 0 },
+    voteStats: {
+      seated: voteStatsRow?.seated ?? 0,
+      voted: voteStatsRow?.voted ?? 0,
+      fullVoted: voteStatsRow?.full ?? 0,
+    },
   });
 });
