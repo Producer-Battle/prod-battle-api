@@ -8,6 +8,8 @@ import { startGenrePromotionLoop } from './genres/promote.js';
 import { anonId } from './middleware/anon-id.js';
 import { requireSignupQuota } from './middleware/rate-limit.js';
 import { attachSession } from './middleware/session.js';
+import { logger } from './observability/logger.js';
+import { initSentry } from './observability/sentry.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
 import { attachWebSocket } from './ws/index.js';
@@ -83,6 +85,8 @@ app.doc('/openapi.json', {
   ],
 });
 
+initSentry();
+
 const server: ServerType = serve(
   {
     fetch: app.fetch,
@@ -90,7 +94,7 @@ const server: ServerType = serve(
     hostname: '0.0.0.0',
   },
   ({ address, port }) => {
-    console.log(`[prod-battle-api] listening on http://${address}:${port} (${env.NODE_ENV})`);
+    logger.info('server.listening', { address, port, env: env.NODE_ENV });
   },
 );
 
@@ -101,7 +105,7 @@ const stopTick = startTickLoop();
 const stopGenrePromotion = startGenrePromotionLoop();
 
 const shutdown = (signal: string) => {
-  console.log(`[prod-battle-api] ${signal} received, draining...`);
+  logger.info('server.shutdown', { signal });
   stopTick();
   stopGenrePromotion();
   server.close(() => process.exit(0));

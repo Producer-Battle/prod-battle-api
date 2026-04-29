@@ -67,6 +67,12 @@ const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
   DISCORD_SUPPORTER_ROLE_ID: z.string().optional(),
+
+  // Sentry error tracking. If SENTRY_DSN is set the SDK initializes at
+  // boot; otherwise the logger and error pipeline are no-ops. Tracing is
+  // sampled at SENTRY_TRACES_SAMPLE_RATE (default 0.1 in production).
+  SENTRY_DSN: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
