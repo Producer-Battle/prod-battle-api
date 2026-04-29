@@ -60,11 +60,12 @@ const checkoutRoute = createRoute({
   },
 });
 
-// Prices per interval. In EUR cents, formatted as Mollie amount strings.
+// Prices per interval. In EUR, formatted as Mollie amount strings.
+// Yearly is monthly x 12 with 20% off (€2.95 x 12 x 0.80 = €28.32).
 const PRICES: Record<z.infer<typeof checkoutBody>['interval'], { amount: string; label: string }> =
   {
-    monthly: { amount: '9.99', label: 'Producer Battle Pro - monthly' },
-    yearly: { amount: '95.88', label: 'Producer Battle Pro - yearly (save 20%)' },
+    monthly: { amount: '2.95', label: 'Prod Battle Supporter - monthly' },
+    yearly: { amount: '28.32', label: 'Prod Battle Supporter - yearly (save 20%)' },
   };
 
 billingRoutes.use('/billing/checkout', requireAuth());
