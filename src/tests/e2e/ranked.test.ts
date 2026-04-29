@@ -62,7 +62,62 @@ describe('mode: ranked', () => {
 
     const results = await getResults(app, match.roomCode);
     expect(results).toHaveLength(4);
-    expect((await getMatch(app, match.roomCode)).status).toBe('results');
+    const final = await getMatch(app, match.roomCode);
+    expect(final.status).toBe('results');
+    // Same voteStats / voteOutcome assertions as the QP test - confirming
+    // the ranked path produces the same results-shape.
+    expect(final.voteStats.seated).toBe(4);
+    expect(final.voteStats.voted).toBe(4);
+    expect(final.voteStats.fullVoted).toBe(4);
+    expect(final.voteOutcome).toBe('complete');
+  });
+
+  it('honor: 2 vote, 1 ghosts in ranked; ghost takes ranked-sized hit (-3)', async () => {
+    // Same scenario as the QP regression test, but in ranked mode. The
+    // ranked_no_vote fallback is -3 (vs -2 for QP). First-offence
+    // forgiveness halves negative penalties, so the ghost should land
+    // around -2 here. Voters should still get +1 regen.
+    const paidUser = await seedTestUser(uniqueHandle('rk-paid-ghost'), {
+      plan: 'paid',
+      role: 'producer',
+    });
+    const paidApp = buildTestApp({ asUser: paidUser });
+    const match = await createMatch(paidApp, { mode: 'ranked', genreSlug: TEST_GENRE_SLUG });
+
+    const handles = ['alpha', 'beta', 'gamma'].map((p) => uniqueHandle(`rk-vote-${p}`));
+    for (const h of handles) await joinRoom(app, match.roomCode, h);
+    const host = handles[0];
+    if (!host) throw new Error('handles empty');
+    await startRoom(app, match.roomCode, host);
+
+    const ownByHandle = new Map<string, string>();
+    for (const h of handles) ownByHandle.set(h, await submitTrack(app, match.roomCode, h));
+
+    const reveal = await getReveal(app, match.roomCode);
+    const [voterA, voterB, ghost] = handles as [string, string, string];
+    await voteForAll(app, match.roomCode, voterA, ownByHandle.get(voterA) ?? null, reveal);
+    await voteForAll(app, match.roomCode, voterB, ownByHandle.get(voterB) ?? null, reveal);
+
+    // Force the vote-phase timer to expire and run the outcome path.
+    const { db } = await import('../../db/client.js');
+    const { sql } = await import('drizzle-orm');
+    const { applyMatchOutcome } = await import('../../honor/outcomes.js');
+    await db().execute(
+      sql`UPDATE matches SET status = 'results', vote_outcome = 'incomplete' WHERE id = ${match.id}`,
+    );
+    await applyMatchOutcome(match.id);
+
+    const rows = (await db().execute<{ handle: string; honor_delta: number }>(
+      sql`SELECT u.handle, mp.honor_delta
+            FROM match_players mp
+            JOIN users u ON u.id = mp.user_id
+           WHERE mp.match_id = ${match.id}`,
+    )) as Array<{ handle: string; honor_delta: number }>;
+    const deltaByHandle = new Map(rows.map((r) => [r.handle, Number(r.honor_delta)]));
+
+    expect(deltaByHandle.get(voterA)).toBeGreaterThan(0);
+    expect(deltaByHandle.get(voterB)).toBeGreaterThan(0);
+    expect(deltaByHandle.get(ghost)).toBeLessThan(0);
   });
 
   it('matchmaking picks an open ranked lobby over spawning a new one', async () => {
