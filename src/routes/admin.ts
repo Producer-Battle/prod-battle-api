@@ -13,13 +13,16 @@ import { desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import {
   type SamplePackItem,
+  achievements as achievementsTable,
   genres,
   matches,
+  rankings,
   samplePacks,
   sessions,
   userRole as userRoleEnum,
   users,
 } from '../db/schema.js';
+import { getCategory } from '../game-rules/loader.js';
 
 export const adminRoutes = new OpenAPIHono();
 
@@ -380,6 +383,84 @@ adminRoutes.openapi(setRoleRoute, async (c) => {
 
   if (!updated) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
   return c.json({ id: updated.id, role: updated.role }, 200);
+});
+
+// ─── POST /admin/users/:id/reset-stats ──────────────────────────────────────
+//
+// Wipe a user's competitive footprint without touching their account or
+// content. Resets:
+//   - users.honor          -> back to honor.start (game_rules)
+//   - rankings             -> all rows for this user deleted (re-calibrates)
+//   - achievements (won)   -> all rows for this user deleted
+//
+// Intentionally does NOT touch:
+//   - users.role / plan / handle / avatar / bio / socials
+//   - submissions, votes cast, follows, pinned tracks
+//   - match_players history (so the user's profile timeline is intact)
+
+const resetStatsRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{id}/reset-stats',
+  tags: ['admin'],
+  summary: "Reset a user's honor + rankings + achievements",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Reset complete',
+      content: {
+        'application/json': {
+          schema: z.object({
+            id: z.string().uuid(),
+            honor: z.number().int(),
+            rankingsDeleted: z.number().int(),
+            achievementsDeleted: z.number().int(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(resetStatsRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+  const honorRules = await getCategory('honor');
+
+  const [existing] = await d.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+  if (!existing) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+
+  const rankingsDel = await d
+    .delete(rankings)
+    .where(eq(rankings.userId, id))
+    .returning({ deleted: rankings.userId });
+  const achievementsDel = await d
+    .delete(achievementsTable)
+    .where(eq(achievementsTable.userId, id))
+    .returning({ deleted: achievementsTable.userId });
+
+  await d
+    .update(users)
+    .set({ honor: honorRules.start, updatedAt: new Date() })
+    .where(eq(users.id, id));
+
+  return c.json(
+    {
+      id,
+      honor: honorRules.start,
+      rankingsDeleted: rankingsDel.length,
+      achievementsDeleted: achievementsDel.length,
+    },
+    200,
+  );
 });
 
 // ─── POST /admin/genres ──────────────────────────────────────────────────────
