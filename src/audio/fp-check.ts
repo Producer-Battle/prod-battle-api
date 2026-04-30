@@ -75,10 +75,15 @@ async function persistFingerprint(
   durationSec: number,
   dqReason: string | null,
 ): Promise<void> {
+  // fpcalc emits unsigned 32-bit ints (up to 2^32-1) but Postgres `integer`
+  // is signed 32-bit. Reinterpret the same bit pattern as signed via `n | 0`
+  // so values like 4122966007 store as -172001289. similarity() uses XOR +
+  // popcount which is bit-identical regardless of signed/unsigned framing.
+  const signed = fingerprint.map((n) => n | 0);
   const d = db();
   await d.execute(
     sql`UPDATE submissions
-           SET fingerprint = ${sql.raw(`ARRAY[${fingerprint.join(',')}]::integer[]`)},
+           SET fingerprint = ${sql.raw(`ARRAY[${signed.join(',')}]::integer[]`)},
                fingerprint_duration_sec = ${durationSec},
                dq_reason = ${dqReason}
          WHERE id = ${submissionId}`,
