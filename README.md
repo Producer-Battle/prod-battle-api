@@ -27,7 +27,6 @@ src/
   room/               match state machine (LOBBY→SUBMIT→REVEAL→VOTE→RESULTS)
   matchmaking/        Quick Play + Ranked queue
   genres/             system genre seed + registry helpers
-  ranking/            Glicko-2
   audio/              presigned S3 uploads, transcode job dispatch
   db/
     schema.ts         drizzle schema - single source of truth for Postgres
