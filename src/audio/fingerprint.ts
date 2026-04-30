@@ -1,31 +1,36 @@
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 
 export type FingerprintResult = {
   duration: number;
   fingerprint: number[];
 };
 
-// fpcalc -raw outputs fingerprint as a comma-separated list of signed 32-bit ints.
-// This avoids the base64/compressed encoding that the default output uses.
-export async function fingerprintFile(path: string): Promise<FingerprintResult> {
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync('fpcalc', ['-raw', '-json', path], {
-      timeout: 30_000,
-    }));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('ENOENT') || msg.includes('not found')) {
-      throw new Error('fpcalc not found - install chromaprint-tools');
-    }
-    throw new Error(`fpcalc failed: ${msg}`);
-  }
+// fpcalc -raw -json emits {"duration": n, "fingerprint": [int, ...]}.
+// fpcalc routinely exits non-zero with "Error decoding audio frame (End of file)"
+// while still producing a valid fingerprint on stdout, so we parse stdout
+// regardless of exit code and only fail when there's nothing parseable.
+export function fingerprintFile(path: string): Promise<FingerprintResult> {
+  return new Promise((resolve, reject) => {
+    execFile('fpcalc', ['-raw', '-json', path], { timeout: 30_000 }, (err, stdout) => {
+      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        reject(new Error('fpcalc not found - install chromaprint-tools'));
+        return;
+      }
 
-  const parsed = JSON.parse(stdout) as { duration: number; fingerprint: string };
-  const fingerprint = parsed.fingerprint.split(',').map((s) => Number.parseInt(s, 10));
+      const trimmed = stdout.trim();
+      if (!trimmed) {
+        reject(new Error(`fpcalc failed: ${err?.message ?? 'no output'}`));
+        return;
+      }
 
-  return { duration: parsed.duration, fingerprint };
+      let parsed: { duration: number; fingerprint: number[] };
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        reject(new Error(`fpcalc output not JSON: ${trimmed.slice(0, 200)}`));
+        return;
+      }
+      resolve({ duration: parsed.duration, fingerprint: parsed.fingerprint });
+    });
+  });
 }
