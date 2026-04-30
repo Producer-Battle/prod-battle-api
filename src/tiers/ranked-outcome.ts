@@ -1,36 +1,26 @@
 // applyRankedOutcome - called at the results phase for ranked matches.
-// Computes pairwise Elo updates against the current season's rankings
-// row for each (player, genre) and writes lp_delta back to match_players
-// so the post-match UI can show the change.
+// Computes Glicko-2 updates for each player against all other players in the
+// match, then writes the new rating/RD/volatility back to rankings and records
+// lp_delta on match_players for the post-match UI.
 //
-// We're using simple Elo (not full Glicko-2) for now because FFA Glicko
-// is non-trivial; a real Glicko-2 update can replace this without
-// schema or call-site changes. The rating field is still called
-// glickoRating for backward compat with existing rows.
-//
-// K-factor scales:
-//   - During calibration (users.calibration_matches_remaining > 0): K=48
-//   - After calibration: K=24
-//   - LP move further clamped by rules.tiers.lpClampBase + lpClampPerLp
-//     so a Master player isn't punished by an off-peak match against a
-//     Bronze.
+// Pairwise score derivation (FFA and team both reduce to this):
+//   score = 1 if this player's rank is strictly better (lower number)
+//   score = 0 if this player's rank is strictly worse
+//   score = 0.5 if ranks are equal (tie)
 
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { matchPlayers, matches, rankings, submissions, users } from '../db/schema.js';
-import { activeSeason, getCategory } from '../game-rules/loader.js';
+import { matchPlayers, matches, rankings, submissions } from '../db/schema.js';
+import { activeSeason } from '../game-rules/loader.js';
+import { updateRating } from '../ranking/glicko2.js';
 import { tickCalibration } from './index.js';
 
-interface PlayerOutcome {
+interface PlayerState {
   userId: string;
-  /** Final rank in the match (1=winner). Higher = worse. */
   rank: number;
-  /** Numeric rating BEFORE this match. */
-  ratingBefore: number;
-  /** Total LP delta computed across all pairings. */
-  delta: number;
-  /** True while users.calibration_matches_remaining > 0. */
-  calibrating: boolean;
+  rating: number;
+  rd: number;
+  volatility: number;
 }
 
 export async function applyRankedOutcome(matchId: string): Promise<void> {
@@ -42,19 +32,13 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
   if (!m.primaryGenreId) return;
 
   const season = await activeSeason();
-  const tierRules = await getCategory('tiers');
 
-  // Gather seated players + their final rank + their current rating.
-  // tallyResults writes finalRank to submissions, not match_players, so
-  // we join through submissions to recover the rank per (match, user).
   const players = await d
     .select({
       userId: matchPlayers.userId,
       finalRank: submissions.finalRank,
-      calibrating: users.calibrationMatchesRemaining,
     })
     .from(matchPlayers)
-    .innerJoin(users, eq(users.id, matchPlayers.userId))
     .innerJoin(
       submissions,
       and(
@@ -64,17 +48,18 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
     )
     .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.isSpectator, false)));
 
-  // Drop anyone with no final rank (abandoned, didn't submit, vote tie
-  // edge case). Need ≥ 2 ranked players to produce any LP movement.
   const ranked = players.filter((p) => p.finalRank !== null);
   if (ranked.length < 2) return;
 
-  // Lazy-create or fetch the ranking row for each player in this genre.
-  // Default rating 1500 / RD 350 (matches schema defaults).
-  const ratings = new Map<string, number>();
+  // Fetch or lazy-create rankings rows.
+  const states: PlayerState[] = [];
   for (const p of ranked) {
     const [row] = await d
-      .select({ rating: rankings.glickoRating })
+      .select({
+        rating: rankings.glickoRating,
+        rd: rankings.glickoRd,
+        volatility: rankings.glickoVolatility,
+      })
       .from(rankings)
       .where(
         and(
@@ -84,8 +69,15 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
         ),
       )
       .limit(1);
+
     if (row) {
-      ratings.set(p.userId, Number(row.rating));
+      states.push({
+        userId: p.userId,
+        rank: p.finalRank ?? 0,
+        rating: Number(row.rating),
+        rd: Number(row.rd),
+        volatility: Number(row.volatility),
+      });
     } else {
       await d
         .insert(rankings)
@@ -95,65 +87,56 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
           seasonId: season.id,
         })
         .onConflictDoNothing();
-      ratings.set(p.userId, 1500);
+      states.push({
+        userId: p.userId,
+        rank: p.finalRank ?? 0,
+        rating: 1500,
+        rd: 350,
+        volatility: 0.06,
+      });
     }
   }
 
-  // Pairwise Elo update across the FFA bracket.
-  const outcomes: PlayerOutcome[] = ranked.map((p) => ({
-    userId: p.userId,
-    rank: p.finalRank ?? 0,
-    ratingBefore: ratings.get(p.userId) ?? 1500,
-    delta: 0,
-    calibrating: p.calibrating > 0,
-  }));
+  // Compute Glicko-2 update for each player against all others.
+  const results = states.map((p) => {
+    const opponents = states
+      .filter((o) => o.userId !== p.userId)
+      .map((o) => ({
+        rating: o.rating,
+        rd: o.rd,
+        score: p.rank < o.rank ? 1 : p.rank > o.rank ? 0 : 0.5,
+      }));
+    const updated = updateRating(
+      { rating: p.rating, rd: p.rd, volatility: p.volatility },
+      opponents,
+    );
+    return { userId: p.userId, rank: p.rank, ratingBefore: p.rating, updated };
+  });
 
-  for (let i = 0; i < outcomes.length; i++) {
-    for (let j = i + 1; j < outcomes.length; j++) {
-      const a = outcomes[i];
-      const b = outcomes[j];
-      if (!a || !b) continue;
-      const k = a.calibrating || b.calibrating ? 48 : 24;
-      // Expected = 1 / (1 + 10^((Rb - Ra)/400))
-      const ea = 1 / (1 + 10 ** ((b.ratingBefore - a.ratingBefore) / 400));
-      const eb = 1 - ea;
-      // sa: 1 = a beat b, 0 = b beat a, 0.5 if tied (same rank).
-      const sa = a.rank < b.rank ? 1 : a.rank > b.rank ? 0 : 0.5;
-      const sb = 1 - sa;
-      a.delta += k * (sa - ea);
-      b.delta += k * (sb - eb);
-    }
-  }
-
-  // Apply per-rank LP clamp from rules: cap = lpClampBase + (myLP / lpClampPerLp)
-  for (const o of outcomes) {
-    const cap = tierRules.lpClampBase + Math.floor(o.ratingBefore / tierRules.lpClampPerLp);
-    if (o.delta > cap) o.delta = cap;
-    if (o.delta < -cap) o.delta = -cap;
-  }
-
-  // Persist: update rankings row, record lp_delta, tick calibration.
-  for (const o of outcomes) {
-    const newRating = Math.max(0, Math.round(o.ratingBefore + o.delta));
+  // Persist updates.
+  for (const r of results) {
+    const newRating = Math.max(0, r.updated.rating);
     await d
       .update(rankings)
       .set({
-        glickoRating: String(newRating),
-        wins: o.rank === 1 ? sql`${rankings.wins} + 1` : sql`${rankings.wins}`,
-        losses: o.rank > 1 ? sql`${rankings.losses} + 1` : sql`${rankings.losses}`,
+        glickoRating: String(newRating.toFixed(3)),
+        glickoRd: String(r.updated.rd.toFixed(3)),
+        glickoVolatility: r.updated.volatility,
+        wins: r.rank === 1 ? sql`${rankings.wins} + 1` : sql`${rankings.wins}`,
+        losses: r.rank > 1 ? sql`${rankings.losses} + 1` : sql`${rankings.losses}`,
         updatedAt: new Date(),
       })
       .where(
         and(
-          eq(rankings.userId, o.userId),
+          eq(rankings.userId, r.userId),
           eq(rankings.genreId, m.primaryGenreId),
           eq(rankings.seasonId, season.id),
         ),
       );
     await d
       .update(matchPlayers)
-      .set({ lpDelta: Math.round(o.delta) })
-      .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.userId, o.userId)));
-    await tickCalibration(o.userId);
+      .set({ lpDelta: Math.round(r.updated.rating - r.ratingBefore) })
+      .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.userId, r.userId)));
+    await tickCalibration(r.userId);
   }
 }
