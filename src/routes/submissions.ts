@@ -272,6 +272,22 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
 
   if (!row) return c.json({ error: 'failed to save submission' }, 500);
 
+  // Fingerprint check runs inline in non-test environments. fpcalc absence
+  // is non-fatal (runFingerprintCheck swallows the error and returns null).
+  if (process.env.NODE_ENV !== 'test') {
+    const { runFingerprintCheck } = await import('../audio/fp-check.js');
+    const dq = await runFingerprintCheck(row.id, result.user.id, audioUrl);
+    if (dq === 'self_resubmit') {
+      return c.json(
+        {
+          error: 'self_resubmit',
+          message: 'This beat is too similar to one you submitted in the last 30 days.',
+        },
+        400,
+      );
+    }
+  }
+
   // For non-daily matches: if every seated player has submitted, advance to reveal.
   // Daily matches do not use the timed phase system.
   if (result.match.mode !== 'daily') {

@@ -11,6 +11,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -494,6 +495,13 @@ export const submissions = pgTable('submissions', {
   // The staleMatchSweep rule 6 deletes rows where expires_at < now() and
   // best-effort deletes the S3 audio object.
   expiresAt: timestamp({ withTimezone: true }),
+  // Chromaprint fingerprint (fpcalc -raw -json output). NULL until the
+  // transcode callback runs; stays NULL if fpcalc is unavailable.
+  fingerprint: integer().array(),
+  fingerprintDurationSec: real(),
+  // Set when a submission is rejected by the fingerprint anti-resubmit check.
+  // Values: 'self_resubmit' | null. Non-null rows do not count in match scoring.
+  dqReason: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 

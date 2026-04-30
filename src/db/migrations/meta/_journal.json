@@ -204,6 +204,13 @@
       "when": 1777400007000,
       "tag": "0028_glicko2_volatility",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1777400008000,
+      "tag": "0029_submission_fingerprints",
+      "breakpoints": true
     }
   ]
 }
