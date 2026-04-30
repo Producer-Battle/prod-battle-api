@@ -88,6 +88,44 @@ Secrets needed:
 | `SCW_ACCESS_KEY` / `SCW_SECRET_KEY` | Scaleway API (container update) |
 | `SCW_PROJECT_ID_STAGING` / `SCW_PROJECT_ID_PROD` | Project targeting |
 
+## Honor system
+
+Every signed-up user has an honor score from **0 to 100** (start: 100). It
+gates competitive features (tournament 70+, ranked 50+, private hosting
+30+, read-only below 10) and gently discourages disengagement. Values are
+configurable via `/admin → Rules → honor`; the JSON lives in the
+`game_rules` table and is read live by `applyMatchOutcome`.
+
+| Mode | Lobby leave | Mid abandon | Empty (no submit) | No-vote (submitted, voted 0×) | Clean finish |
+|---|---|---|---|---|---|
+| Quickplay | -1 | -2 | -3 | -2 | +1 (+5 burst /10 clean) |
+| Ranked | -2 | -5 | -3 | -3 | +1 (+5 burst /10 clean) |
+| Private | -1 | -2 | -2 | -1 | +1 |
+| Flip | -1 | -2 | -3 | -2 | +1 |
+| Daily | -1 | -2 | -3 | -1 | +1 |
+| Tournament | -2 | -7 | -5 | -3 | +1 |
+
+Plus: DMCA tiers -5 / -15 / -25, vote-ring -50.
+
+**First-offence forgiveness** halves any negative penalty if the player has
+no other honor change in the rolling 30-day window. So a single slip costs
+half. Repeated abandons hit at full value.
+
+**Burst regen** (Quickplay + Ranked): every 10 consecutive clean matches in
+the same mode adds an extra +5 on top of the per-match +1. Rehab lane for
+players who fell below a gate.
+
+**"Fully voted" threshold**:
+- Live battles (qp/ranked/private/flip/tournament): voted on every other
+  entry (`N - 1` if you submitted, else `N`).
+- Daily Challenge: at least one vote counts. Daily plays each track as a
+  60s preview, so 20 entries × 60s = ~20 minutes of attention; we don't
+  ask for completionism on top of that.
+
+**Daily-specific submission rules**: 90 second minimum, 240 second (4 min)
+maximum. Battle modes don't enforce a length minimum because their timer
+already does.
+
 ## Next steps
 
 1. Wire up `better-auth` in `routes/auth.ts`.
