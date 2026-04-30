@@ -133,13 +133,15 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
 
     if (p.hasSubmission && !p.abandoned) {
       // Clean completion: regen +1 (capped), record completed_at.
-      // Quickplay completions also count toward a streak burst: every N
-      // clean QP matches in a row triggers an extra +5 (configurable).
-      // The burst is the rehab lane for low-honor players to recover
-      // faster than +1/match.
+      // Competitive modes (Quickplay + Ranked) also count toward a streak
+      // burst: every N clean matches of the SAME mode in a row triggers
+      // an extra +5 (configurable). The burst is the rehab lane for
+      // low-honor players to recover faster than +1/match. Ranked got
+      // the burst in the 2026-04-30 honor-tuning pass after the recovery
+      // math showed ranked-only players had no faster recovery channel.
       let regen = honorRules.regenPerCleanDay;
       let bonusReason: string | null = null;
-      if (m.mode === 'quickplay') {
+      if (m.mode === 'quickplay' || m.mode === 'ranked') {
         const burst = honorRules.regenBurstPerCleanQpMatches;
         const recent = await d.execute<{
           mode: string;
@@ -150,17 +152,19 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
                 JOIN matches m ON m.id = mp.match_id
                WHERE mp.user_id = ${p.userId}
                  AND mp.completed_at IS NOT NULL
+                 AND m.mode = ${m.mode}
                ORDER BY mp.completed_at DESC
                LIMIT ${burst.matches}`,
         );
         const arr = recent as Array<{ mode: string; abandoned: boolean }>;
         // Including the just-completed match (which we're about to write
         // completed_at for - so it's not in the query yet, but we know
-        // it's a clean QP). Need (burst.matches - 1) PRIOR clean QPs.
-        const priorCleanQp = arr.filter((r) => r.mode === 'quickplay' && !r.abandoned).length;
-        if (priorCleanQp >= burst.matches - 1) {
+        // it's a clean match in this mode). Need (burst.matches - 1)
+        // PRIOR clean matches in the same mode.
+        const priorClean = arr.filter((r) => !r.abandoned).length;
+        if (priorClean >= burst.matches - 1) {
           regen += burst.amount;
-          bonusReason = `+${burst.amount} burst after ${burst.matches} clean QP`;
+          bonusReason = `+${burst.amount} burst after ${burst.matches} clean ${m.mode}`;
         }
       }
       await d
