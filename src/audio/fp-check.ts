@@ -43,7 +43,7 @@ async function loadRecentFingerprints(
   excludeId: string,
   crossUser: boolean,
 ): Promise<PriorRow[]> {
-  const cutoff = new Date(Date.now() - WINDOW_DAYS * 86400 * 1000);
+  const cutoff = new Date(Date.now() - WINDOW_DAYS * 86400 * 1000).toISOString();
   const d = db();
 
   if (crossUser) {
