@@ -19,6 +19,11 @@ import { requireProducerQuota } from '../middleware/rate-limit.js';
 import { maybeAdvanceAfterSubmission } from '../room/transitions.js';
 
 const DAILY_CAP = 20;
+// Daily Challenge song-length window: 90s..240s. Daily is async over 24h so
+// we ask for a real song, not a 30s loop. Battle modes leave duration
+// unconstrained on purpose - their timer already enforces brevity.
+const DAILY_MIN_DURATION_SEC = 90;
+const DAILY_MAX_DURATION_SEC = 240;
 
 export const submissionsRoutes = new OpenAPIHono();
 
@@ -168,7 +173,9 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
 
   const d = db();
 
-  // Prevent double-submission per (match, user).
+  // Prevent double-submission per (match, user). Runs BEFORE the daily
+  // duration gate so a 30s "second try" hits the 409 instead of being
+  // misreported as too-short.
   const existing = await d.execute<{ id: string }>(
     sql`SELECT id FROM submissions
          WHERE match_id = ${result.match.id} AND user_id = ${result.user.id}
@@ -178,13 +185,34 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
     return c.json({ error: 'already submitted' }, 409);
   }
 
-  // For daily matches: enforce paid-tier gate then the 20-unique-submitter cap.
+  // For daily matches: enforce paid-tier gate, the 20-unique-submitter cap,
+  // and the song-length window (90s..240s). Daily is a 24-hour async window
+  // so we can ask for a real song; producers don't get away with a 30-second
+  // loop. Battle modes intentionally don't enforce minimum length.
   if (result.match.mode === 'daily') {
     const user = c.var.user;
     if (!user || (user.plan !== 'paid' && user.role !== 'admin')) {
       return c.json(
         { error: 'payment_required', message: 'Daily Challenge is a Pro feature.' },
         402,
+      );
+    }
+    if (body.durationSec != null && body.durationSec < DAILY_MIN_DURATION_SEC) {
+      return c.json(
+        {
+          error: 'too_short',
+          message: `Daily Challenge tracks must be at least ${DAILY_MIN_DURATION_SEC} seconds. Yours is ${body.durationSec}s.`,
+        },
+        400,
+      );
+    }
+    if (body.durationSec != null && body.durationSec > DAILY_MAX_DURATION_SEC) {
+      return c.json(
+        {
+          error: 'too_long',
+          message: `Daily Challenge tracks must be at most ${DAILY_MAX_DURATION_SEC} seconds (4 minutes). Yours is ${body.durationSec}s.`,
+        },
+        400,
       );
     }
     const capRows = await d.execute<{ n: number }>(

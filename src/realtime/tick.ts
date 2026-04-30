@@ -180,6 +180,14 @@ async function dailyRolloverCheck(): Promise<void> {
       .set({ status: 'results', endedAt: new Date() })
       .where(sql`${matches.id} = ${row.id}`);
 
+    // Run the standard results-phase side effects so honor + tally fire
+    // for the daily match the same way they do for live battles. Without
+    // this hook the daily match transitions to results without applying
+    // any honor delta.
+    await onEnterPhase(row.id, 'results').catch((err: Error) =>
+      console.error(`[tick] daily onEnterPhase failed for ${row.id}: ${err.message}`),
+    );
+
     await publish(`battle:${row.id}`, {
       type: 'phase_change',
       matchId: row.id,

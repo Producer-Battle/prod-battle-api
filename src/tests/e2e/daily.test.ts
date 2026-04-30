@@ -59,8 +59,10 @@ describe('mode: daily (Daily Challenge)', () => {
 
     await joinRoom(appA, code, aUser.handle);
     await joinRoom(appB, code, bUser.handle);
-    const subA = await submitTrack(appA, code, aUser.handle);
-    const subB = await submitTrack(appB, code, bUser.handle);
+    // Daily Challenge enforces a 90s..240s submission length. The default
+    // submitTrack helper sends 30s which would be rejected with 'too_short'.
+    const subA = await submitTrack(appA, code, aUser.handle, { durationSec: 120 });
+    const subB = await submitTrack(appB, code, bUser.handle, { durationSec: 150 });
     expect(subA).not.toBe(subB);
 
     // Daily matches stay in 'submit' status - votes are accepted anyway.
@@ -94,7 +96,7 @@ describe('mode: daily (Daily Challenge)', () => {
     const code = dc.json.roomCode;
     const h = paidUser.handle;
     await joinRoom(app, code, h);
-    await submitTrack(app, code, h);
+    await submitTrack(app, code, h, { durationSec: 120 });
 
     // Second submit from the same handle must hit the unique-per-match guard.
     const urlRes = await postJson<{ key: string }>(app, `/rooms/${code}/upload-url`, {

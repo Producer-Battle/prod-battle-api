@@ -397,6 +397,7 @@ const votableRoute = createRoute({
             items: z.array(
               z.object({
                 roomCode: z.string(),
+                mode: z.enum(['quickplay', 'ranked', 'private', 'flip', 'daily', 'tournament']),
                 phase: z.string(),
                 transitionsAt: z.number().int().nullable(),
                 genre: z.object({ slug: z.string(), name: z.string() }),
@@ -423,12 +424,13 @@ phasesRoutes.openapi(votableRoute, async (c) => {
   const matchRows = await d.execute<{
     match_id: string;
     room_code: string;
+    mode: 'quickplay' | 'ranked' | 'private' | 'flip' | 'daily' | 'tournament';
     phase: string;
     transitions_at: string | null;
     genre_slug: string;
     genre_name: string;
   }>(
-    sql`SELECT m.id AS match_id, m.room_code, m.status AS phase,
+    sql`SELECT m.id AS match_id, m.room_code, m.mode, m.status AS phase,
                bp.transitions_at,
                g.slug AS genre_slug, g.name AS genre_name
           FROM matches m
@@ -473,6 +475,7 @@ phasesRoutes.openapi(votableRoute, async (c) => {
   const items = await Promise.all(
     matchRows.map(async (m) => ({
       roomCode: m.room_code,
+      mode: m.mode,
       phase: m.phase,
       transitionsAt: m.transitions_at ? new Date(m.transitions_at).getTime() : null,
       genre: { slug: m.genre_slug, name: m.genre_name },

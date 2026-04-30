@@ -38,9 +38,20 @@ const NO_VOTE_PENALTY_FALLBACK: Record<ModeKey, number> = {
   ranked: -3,
   private: -1,
   flip: -2,
-  daily: 0, // daily voting happens async, no per-match accountability
+  // Daily is async with up to 20 submissions; we only require ONE vote
+  // (see fullVoteThresholdFor below), so the penalty is gentle.
+  daily: -1,
   tournament: -3,
 };
+
+// How many other-submission votes count as "fully voted" per mode. For
+// most modes a voter is expected to score every non-self entry. Daily is
+// async with up to 20 tracks; asking for all 19 is unreasonable, so we
+// drop the threshold to "cast at least one vote".
+function fullVoteThresholdFor(mode: string, votableCount: number): number {
+  if (mode === 'daily') return votableCount === 0 ? 0 : 1;
+  return votableCount;
+}
 
 function modeKeyFor(mode: string): ModeKey {
   if (ABANDONABLE_MODES.has(mode)) return mode as ModeKey;
@@ -98,7 +109,8 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
     if (p.honorDelta !== 0) continue; // already adjusted by mid-match grace
 
     const votable = p.votableCount;
-    const fullyVoted = votable === 0 || p.votesCast >= votable;
+    const threshold = fullVoteThresholdFor(m.mode, votable);
+    const fullyVoted = threshold === 0 || p.votesCast >= threshold;
 
     if (p.hasSubmission && !p.abandoned && !fullyVoted) {
       // Submitted but ghosted on the vote phase. Small honor hit so the
