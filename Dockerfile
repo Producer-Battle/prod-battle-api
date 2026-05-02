@@ -25,7 +25,7 @@ ENV PORT=8080
 #   mail.prodbattle.com:465). Alpine's base image ships without it; without
 #   it, nodemailer's TLS handshake to Mailu silently stalls until Mailu drops
 #   the connection ("no auth attempts in 5 secs" in submission-login logs).
-RUN apk add --no-cache ffmpeg ca-certificates chromaprint-tools
+RUN apk add --no-cache ffmpeg ca-certificates chromaprint
 RUN addgroup -S app && adduser -S -G app app
 COPY package.json pnpm-lock.yaml* ./
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
