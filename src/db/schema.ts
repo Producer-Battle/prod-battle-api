@@ -5,6 +5,7 @@ import {
   check,
   date,
   doublePrecision,
+  index,
   integer,
   jsonb,
   numeric,
@@ -648,6 +649,27 @@ export const messages = pgTable('messages', {
   readAt: timestamp({ withTimezone: true }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
+
+// Per-match room chat. Persisted so rejoiners can hydrate the last N
+// messages on connect; live broadcast goes through Redis pub/sub on the
+// existing battle:{matchId} channel. handleSnapshot freezes the sender's
+// handle at send time so a later rename doesn't retro-edit chat history.
+export const matchChat = pgTable(
+  'match_chat',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    matchId: uuid()
+      .notNull()
+      .references(() => matches.id, { onDelete: 'cascade' }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    handleSnapshot: text().notNull(),
+    body: text().notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('match_chat_match_id_created_at_idx').on(t.matchId, t.createdAt)],
+);
 
 /*
  * Admin + flags
