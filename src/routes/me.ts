@@ -1288,3 +1288,83 @@ meRoutes.openapi(pinnedTracksRoute, async (c) => {
 
   return c.json({ pinnedSubmissionIds: submissionIds }, 200);
 });
+
+// ─── GET /me/active-matches ──────────────────────────────────────────────────
+// Rooms the caller is seated in that haven't ended yet. Powers the "Rejoin"
+// callout on /play after a navigate-away. Excludes abandoned matches (the
+// abandon penalty was already applied; a return there has no point).
+
+const ActiveMatchRow = z.object({
+  roomCode: z.string(),
+  mode: z.string(),
+  status: z.string(),
+  currentPhase: z.string().nullable(),
+  genreSlug: z.string(),
+  genreName: z.string(),
+  joinedAt: z.string().datetime(),
+});
+
+const activeMatchesRoute = createRoute({
+  method: 'get',
+  path: '/me/active-matches',
+  tags: ['profile'],
+  summary: 'Matches the caller has joined that have not yet finished',
+  middleware: [requireAuth()] as const,
+  responses: {
+    200: {
+      description: 'Active matches',
+      content: {
+        'application/json': { schema: z.object({ items: z.array(ActiveMatchRow) }) },
+      },
+    },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(activeMatchesRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+
+  const rows = await db().execute<{
+    room_code: string;
+    mode: string;
+    status: string;
+    current_phase: string | null;
+    genre_slug: string;
+    genre_name: string;
+    joined_at: Date | string;
+  }>(
+    sql`SELECT m.room_code,
+               m.mode,
+               m.status,
+               bp.current_phase,
+               g.slug AS genre_slug,
+               g.name AS genre_name,
+               mp.joined_at
+          FROM match_players mp
+          JOIN matches m ON m.id = mp.match_id
+          JOIN genres g ON g.id = m.primary_genre_id
+          LEFT JOIN battle_phases bp ON bp.match_id = m.id
+         WHERE mp.user_id = ${user.id}
+           AND mp.abandoned = false
+           AND mp.is_spectator = false
+           AND m.status IN ('lobby','submit','vote','reveal')
+         ORDER BY mp.joined_at DESC
+         LIMIT 10`,
+  );
+
+  return c.json(
+    {
+      items: (rows as Array<typeof rows extends Iterable<infer T> ? T : never>).map((r) => ({
+        roomCode: r.room_code,
+        mode: r.mode,
+        status: r.status,
+        currentPhase: r.current_phase,
+        genreSlug: r.genre_slug,
+        genreName: r.genre_name,
+        joinedAt: new Date(r.joined_at).toISOString(),
+      })),
+    },
+    200,
+  );
+});
