@@ -2,9 +2,7 @@
 // match advances (submit->vote->results). Also callable directly
 // from submission / vote routes when all players finish early.
 
-import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { and, asc, eq, sql } from 'drizzle-orm';
-import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches, submissions, votes } from '../db/schema.js';
 import { publish } from '../realtime/pubsub.js';
@@ -22,10 +20,12 @@ const NULL_DURATION_FALLBACK = 30; // assumed duration when durationSec is NULL
  * write to submissions.score + final_rank. Ranks 1..N, ties broken by
  * earliest created_at.
  *
- * Zero-vote cleanup: if EVERY submission has 0 votes (nobody voted at all),
- * we delete the submission rows and their S3 audio objects so the feed/
- * leaderboard stays clean. The match still transitions to 'results'; the
- * empty submissions list is the signal that no winner was recorded.
+ * Submissions are always preserved and always ranked. A producer who
+ * uploaded a track gets rank 1 in a 1-submission match even if no votes
+ * landed on it (votes silently dropped, voter low-honor, voter late, etc.).
+ * Earlier versions deleted "all-zero" matches but that erased legitimate
+ * submitters when their only voter's ballot got filtered - the match
+ * looked like nobody won when in fact one producer was the lone submitter.
  */
 async function tallyResults(matchId: string): Promise<void> {
   const d = db();
@@ -33,53 +33,27 @@ async function tallyResults(matchId: string): Promise<void> {
   // Collect scores keyed by submission.
   const rows = await d.execute<{
     submission_id: string;
-    audio_url: string;
     score: string | number;
     tie_break: string;
   }>(
     sql`SELECT s.id AS submission_id,
-               s.audio_url,
                COALESCE(SUM(v.weight), 0) AS score,
                s.created_at AS tie_break
           FROM submissions s
           LEFT JOIN votes v
             ON v.submission_id = s.id AND v.match_id = ${matchId}
          WHERE s.match_id = ${matchId}
-         GROUP BY s.id, s.audio_url, s.created_at
+         GROUP BY s.id, s.created_at
          ORDER BY COALESCE(SUM(v.weight), 0) DESC, s.created_at ASC`,
   );
 
-  // Zero-vote cleanup: if there are submissions but all have score=0, scrub them.
-  const hasSubmissions = rows.length > 0;
-  const allZeroVotes = hasSubmissions && rows.every((r) => Number(r.score) === 0);
-
-  if (allZeroVotes) {
-    // Delete S3 audio objects first (best-effort - do not fail the transition).
-    for (const row of rows) {
-      const key = keyFromUrl(row.audio_url);
-      if (key) {
-        try {
-          await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
-        } catch (err) {
-          console.warn(`[transitions] failed to delete S3 object ${key}:`, (err as Error).message);
-        }
-      }
-    }
-    // Delete submission rows. submission_votes and submission_likes cascade.
-    for (const row of rows) {
-      await d.delete(submissions).where(eq(submissions.id, row.submission_id));
-    }
-    console.log(`[transitions] ${matchId}: all-zero vote - ${rows.length} submission(s) scrubbed`);
-  } else {
-    // Normal path: assign scores and ranks.
-    let rank = 1;
-    for (const row of rows) {
-      await d
-        .update(submissions)
-        .set({ score: String(row.score), finalRank: rank })
-        .where(eq(submissions.id, row.submission_id));
-      rank++;
-    }
+  let rank = 1;
+  for (const row of rows) {
+    await d
+      .update(submissions)
+      .set({ score: String(row.score), finalRank: rank })
+      .where(eq(submissions.id, row.submission_id));
+    rank++;
   }
 
   // Flip match status + publish final results event with revealed identities.

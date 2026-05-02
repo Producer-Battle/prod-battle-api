@@ -325,4 +325,155 @@ describe('voting tally', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // ─── lone-submitter wins (the user-reported bug) ──────────────────────
+  //
+  // "If someone doesn't submit and you are with 2, the other that does
+  //  submit is the winner, right?"  Yes - across every code path that
+  //  could erase the submission, A must remain rank 1.
+
+  it('2P, only A submits, no votes at all → A is winner (rank 1, submission preserved)', async () => {
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('lone-a');
+    const b = uniqueHandle('lone-b');
+    await joinRoom(app, match.roomCode, a);
+    await joinRoom(app, match.roomCode, b);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    await forceVotePhase(match.id);
+    await forceResultsPhase(match.id);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.handle).toBe(a);
+    expect(results[0]?.rank).toBe(1);
+    expect(results[0]?.submissionId).toBe(aSubId);
+  });
+
+  it('2P, only A submits, B votes 5 but B has honor=10 → A still wins (rank 1, score 0)', async () => {
+    // Repro for the silent-zero footgun: vote returns 200, the row is
+    // stored at weight 0, and the old all-zero scrub would have deleted
+    // A's submission. Now A is preserved and ranks 1.
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('zero-a');
+    const b = uniqueHandle('zero-b');
+    await joinRoom(app, match.roomCode, a);
+    await joinRoom(app, match.roomCode, b);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    await forceVotePhase(match.id);
+
+    await db().execute(sql`UPDATE ${users} SET honor = 10 WHERE handle = ${b}`);
+
+    const voteRes = await postJson(app, `/rooms/${match.roomCode}/vote`, {
+      user: b,
+      votes: [{ submissionId: aSubId, score: 5 }],
+    });
+    expect(voteRes.status).toBe(200);
+
+    await forceResultsPhase(match.id);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.handle).toBe(a);
+    expect(results[0]?.rank).toBe(1);
+    expect(results[0]?.score).toBe(0);
+  });
+
+  it('2P, only A submits, B tries to vote AFTER results → A still wins (rank 1)', async () => {
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('lateA');
+    const b = uniqueHandle('lateB');
+    await joinRoom(app, match.roomCode, a);
+    await joinRoom(app, match.roomCode, b);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    await forceVotePhase(match.id);
+    await forceResultsPhase(match.id);
+
+    const lateVote = await postJson(app, `/rooms/${match.roomCode}/vote`, {
+      user: b,
+      votes: [{ submissionId: aSubId, score: 5 }],
+    });
+    expect(lateVote.status).toBe(400);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.rank).toBe(1);
+    expect(results[0]?.handle).toBe(a);
+  });
+
+  it('3P, only A submits, B and C never vote → A still wins (rank 1)', async () => {
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('soloA');
+    const b = uniqueHandle('soloB');
+    const c = uniqueHandle('soloC');
+    for (const h of [a, b, c]) await joinRoom(app, match.roomCode, h);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    await forceVotePhase(match.id);
+    await forceResultsPhase(match.id);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.handle).toBe(a);
+    expect(results[0]?.rank).toBe(1);
+    expect(results[0]?.submissionId).toBe(aSubId);
+  });
+
+  it('2P, both submit, neither votes → both submissions preserved and ranked', async () => {
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('quietA');
+    const b = uniqueHandle('quietB');
+    await joinRoom(app, match.roomCode, a);
+    await joinRoom(app, match.roomCode, b);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    const bSubId = await submitTrack(app, match.roomCode, b);
+    expect((await getMatch(app, match.roomCode)).currentPhase).toBe('vote');
+
+    await forceResultsPhase(match.id);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.submissionId).sort()).toEqual([aSubId, bSubId].sort());
+    // Both have score 0 → ranks split by created_at ASC.
+    expect(results.map((r) => r.rank).sort()).toEqual([1, 2]);
+    for (const r of results) expect(r.score).toBe(0);
+  });
+
+  it('2P, both submit, only B votes 5 for A → A rank 1, B rank 2 (still preserved)', async () => {
+    const match = await createMatch(app, { mode: 'quickplay' });
+    const a = uniqueHandle('mixA');
+    const b = uniqueHandle('mixB');
+    await joinRoom(app, match.roomCode, a);
+    await joinRoom(app, match.roomCode, b);
+    await startRoom(app, match.roomCode, a);
+
+    const aSubId = await submitTrack(app, match.roomCode, a);
+    const bSubId = await submitTrack(app, match.roomCode, b);
+
+    const voteRes = await postJson(app, `/rooms/${match.roomCode}/vote`, {
+      user: b,
+      votes: [{ submissionId: aSubId, score: 5 }],
+    });
+    expect(voteRes.status).toBe(200);
+
+    await forceResultsPhase(match.id);
+
+    const results = await getResults(app, match.roomCode);
+    expect(results).toHaveLength(2);
+    const winner = results.find((r) => r.handle === a);
+    const runnerUp = results.find((r) => r.handle === b);
+    expect(winner?.rank).toBe(1);
+    expect(winner?.score).toBeCloseTo(7.5, 3);
+    expect(runnerUp?.rank).toBe(2);
+    expect(runnerUp?.submissionId).toBe(bSubId);
+    expect(runnerUp?.score).toBe(0);
+  });
 });
