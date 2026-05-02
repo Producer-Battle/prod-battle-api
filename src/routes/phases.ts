@@ -25,7 +25,12 @@ const revealRoute = createRoute({
   path: '/matches/{code}/reveal',
   tags: ['phases'],
   summary: 'Anonymized submissions for the reveal phase',
-  request: { params: z.object({ code: z.string() }) },
+  request: {
+    params: z.object({ code: z.string() }),
+    // Guests aren't authenticated, so we accept ?user=<handle> to compute
+    // isOwn for them. Authenticated callers' session takes priority.
+    query: z.object({ user: z.string().optional() }),
+  },
   responses: {
     200: {
       description: 'Submissions in play order',
@@ -55,8 +60,21 @@ const revealRoute = createRoute({
 
 phasesRoutes.openapi(revealRoute, async (c) => {
   const { code } = c.req.valid('param');
-  const callerId = c.var.user?.id ?? null;
+  const { user: handleParam } = c.req.valid('query');
   const d = db();
+
+  // Auth session wins; fall back to ?user=<handle> for guests so isOwn
+  // still works for unauthenticated producers.
+  let callerId: string | null = c.var.user?.id ?? null;
+  if (!callerId && handleParam) {
+    const [u] = await d
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.handle, handleParam))
+      .limit(1);
+    callerId = u?.id ?? null;
+  }
+
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return c.json({ error: 'match not found' }, 404);
 
