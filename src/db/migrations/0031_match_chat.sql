@@ -6,7 +6,7 @@
 -- WS connection on join (last 50) and over Redis pub/sub for live new
 -- messages.
 
-CREATE TABLE match_chat (
+CREATE TABLE IF NOT EXISTS match_chat (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   match_id uuid NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -15,5 +15,5 @@ CREATE TABLE match_chat (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX match_chat_match_id_created_at_idx
+CREATE INDEX IF NOT EXISTS match_chat_match_id_created_at_idx
   ON match_chat (match_id, created_at);

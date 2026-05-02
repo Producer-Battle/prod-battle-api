@@ -6,7 +6,11 @@
 -- matches so the leaderboard signal stays clean and (b) surface a "partial
 -- tally" pill on the Results UI.
 
-CREATE TYPE vote_outcome AS ENUM ('complete', 'incomplete');
+DO $$ BEGIN
+  CREATE TYPE vote_outcome AS ENUM ('complete', 'incomplete');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 ALTER TABLE matches
   ADD COLUMN IF NOT EXISTS vote_outcome vote_outcome;
