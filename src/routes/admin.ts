@@ -265,6 +265,7 @@ const listUsersRoute = createRoute({
               z.object({
                 id: z.string().uuid(),
                 email: z.string(),
+                emailVerified: z.boolean(),
                 handle: z.string(),
                 role: z.enum(ROLES),
                 status: z.enum(['active', 'archived', 'deleted']),
@@ -296,12 +297,13 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
   const rows = await d.execute<{
     id: string;
     email: string;
+    email_verified: boolean;
     handle: string;
     role: 'producer' | 'ar' | 'admin';
     status: 'active' | 'archived' | 'deleted';
     created_at: string;
   }>(sql`
-    SELECT id, email, handle, role, status, created_at
+    SELECT id, email, email_verified, handle, role, status, created_at
       FROM users
      WHERE (${qLike}::text IS NULL OR email ILIKE ${qLike} OR handle ILIKE ${qLike})
        AND (${role ?? null}::user_role IS NULL OR role = ${role ?? null}::user_role)
@@ -323,6 +325,7 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
       items: rows.map((r) => ({
         id: r.id,
         email: r.email,
+        emailVerified: r.email_verified,
         handle: r.handle,
         role: r.role,
         status: r.status,
@@ -461,6 +464,70 @@ adminRoutes.openapi(resetStatsRoute, async (c) => {
     },
     200,
   );
+});
+
+// ─── POST /admin/users/:id/verify-email ─────────────────────────────────────
+//
+// Manual override for the email/password activation flow. Used when a user
+// signed up but never clicked the verification link (token expired, email
+// went to spam, typo in the address). Flips users.emailVerified to true so
+// they can sign in. Idempotent: calling on an already-verified user returns
+// 200 with alreadyVerified=true and does not touch the row. OAuth users
+// are already verified at signup, so this is mainly useful for the
+// email/password path.
+
+const verifyEmailRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{id}/verify-email',
+  tags: ['admin'],
+  summary: "Manually mark a user's email as verified",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Verified',
+      content: {
+        'application/json': {
+          schema: z.object({
+            id: z.string().uuid(),
+            emailVerified: z.literal(true),
+            alreadyVerified: z.boolean(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+  },
+});
+
+adminRoutes.openapi(verifyEmailRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [existing] = await d
+    .select({ id: users.id, emailVerified: users.emailVerified })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (!existing) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+
+  if (existing.emailVerified) {
+    return c.json({ id, emailVerified: true as const, alreadyVerified: true }, 200);
+  }
+
+  await d
+    .update(users)
+    .set({ emailVerified: true, updatedAt: new Date() })
+    .where(eq(users.id, id));
+
+  return c.json({ id, emailVerified: true as const, alreadyVerified: false }, 200);
 });
 
 // ─── POST /admin/genres ──────────────────────────────────────────────────────
