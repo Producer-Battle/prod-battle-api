@@ -522,10 +522,7 @@ adminRoutes.openapi(verifyEmailRoute, async (c) => {
     return c.json({ id, emailVerified: true as const, alreadyVerified: true }, 200);
   }
 
-  await d
-    .update(users)
-    .set({ emailVerified: true, updatedAt: new Date() })
-    .where(eq(users.id, id));
+  await d.update(users).set({ emailVerified: true, updatedAt: new Date() }).where(eq(users.id, id));
 
   return c.json({ id, emailVerified: true as const, alreadyVerified: false }, 200);
 });
