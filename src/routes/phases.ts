@@ -407,6 +407,10 @@ const votableRoute = createRoute({
                     label: z.string(),
                     audioUrl: z.string().url(),
                     durationSec: z.number().int().nullable(),
+                    // True when the caller is signed in and this is their
+                    // own submission. The /vote page disables scoring; the
+                    // server still drops self-votes silently as defense.
+                    isOwn: z.boolean(),
                   }),
                 ),
               }),
@@ -420,6 +424,7 @@ const votableRoute = createRoute({
 
 phasesRoutes.openapi(votableRoute, async (c) => {
   const d = db();
+  const callerId = c.var.user?.id ?? null;
 
   const matchRows = await d.execute<{
     match_id: string;
@@ -450,10 +455,11 @@ phasesRoutes.openapi(votableRoute, async (c) => {
   const subRows = await d.execute<{
     id: string;
     match_id: string;
+    user_id: string | null;
     audio_url: string;
     duration_sec: number | null;
   }>(
-    sql`SELECT id, match_id, audio_url, duration_sec
+    sql`SELECT id, match_id, user_id, audio_url, duration_sec
           FROM submissions
          WHERE match_id = ANY(${matchIds})
          ORDER BY id`,
@@ -462,6 +468,7 @@ phasesRoutes.openapi(votableRoute, async (c) => {
   type SubRow = {
     id: string;
     match_id: string;
+    user_id: string | null;
     audio_url: string;
     duration_sec: number | null;
   };
@@ -485,6 +492,7 @@ phasesRoutes.openapi(votableRoute, async (c) => {
           label: `Entry ${String.fromCharCode(65 + i)}`,
           audioUrl: await signUrl(s.audio_url, 3600),
           durationSec: s.duration_sec,
+          isOwn: callerId !== null && s.user_id === callerId,
         })),
       ),
     })),
