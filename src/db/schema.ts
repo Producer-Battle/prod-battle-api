@@ -57,13 +57,21 @@ export const matchMode = pgEnum('match_mode', [
 export const matchStatus = pgEnum('match_status', [
   'lobby',
   'submit',
+  'upload',
   'reveal',
   'vote',
   'results',
   'cancelled',
 ]);
 
-export const matchPhase = pgEnum('match_phase', ['lobby', 'submit', 'reveal', 'vote', 'results']);
+export const matchPhase = pgEnum('match_phase', [
+  'lobby',
+  'submit',
+  'upload',
+  'reveal',
+  'vote',
+  'results',
+]);
 export const voteOutcome = pgEnum('vote_outcome', ['complete', 'incomplete']);
 
 export const samplePackKind = pgEnum('sample_pack_kind', ['uploaded', 'generated', 'pool']);

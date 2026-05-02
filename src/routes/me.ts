@@ -1348,7 +1348,7 @@ meRoutes.openapi(activeMatchesRoute, async (c) => {
          WHERE mp.user_id = ${user.id}
            AND mp.abandoned = false
            AND mp.is_spectator = false
-           AND m.status IN ('lobby','submit','vote','reveal')
+           AND m.status IN ('lobby','submit','upload','vote','reveal')
          ORDER BY mp.joined_at DESC
          LIMIT 10`,
   );

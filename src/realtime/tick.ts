@@ -17,7 +17,7 @@ import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
-import { nextPhase } from '../room/state.js';
+import { UPLOAD_PHASE_SECONDS, nextPhase } from '../room/state.js';
 import { VOTE_SECONDS_DEFAULT, computeVoteDuration, onEnterPhase } from '../room/transitions.js';
 import { runAsLeader } from './leader.js';
 import { publish } from './pubsub.js';
@@ -109,6 +109,9 @@ async function tick(): Promise<void> {
         row.submitSeconds ??
         SUBMIT_SECONDS_DEFAULT[row.matchMode as keyof typeof SUBMIT_SECONDS_DEFAULT] ??
         300;
+    } else if (next === 'upload') {
+      // Hard upload window: 2 min for everyone to finalize and upload.
+      durationSeconds = UPLOAD_PHASE_SECONDS;
     } else if (next === 'vote') {
       // Vote duration = max(configured floor, sum of audio durations + buffer).
       // This ensures producers have time to listen to all tracks before voting.
@@ -562,7 +565,7 @@ async function graceCheck(): Promise<void> {
     sql`SELECT mp.match_id, mp.user_id, m.mode
           FROM match_players mp
           JOIN matches m ON m.id = mp.match_id
-         WHERE m.status IN ('lobby','submit','vote')
+         WHERE m.status IN ('lobby','submit','upload','vote')
            AND mp.is_spectator = false
            AND mp.abandoned = false
            AND mp.honor_delta = 0`,

@@ -111,7 +111,7 @@ adminRoutes.openapi(overviewRoute, async (c) => {
   const [matchCounts] = await d.execute<{ total: string; live: string }>(sql`
     SELECT
       COUNT(*)::text AS total,
-      COUNT(*) FILTER (WHERE status IN ('lobby','submit','reveal','vote'))::text AS live
+      COUNT(*) FILTER (WHERE status IN ('lobby','submit','upload','reveal','vote'))::text AS live
     FROM matches
   `);
 
@@ -214,7 +214,7 @@ adminRoutes.openapi(liveMatchesRoute, async (c) => {
            m.created_at
       FROM matches m
       JOIN genres g ON g.id = m.primary_genre_id
-     WHERE m.status IN ('lobby','submit','reveal','vote')
+     WHERE m.status IN ('lobby','submit','upload','reveal','vote')
      ORDER BY m.created_at DESC
      LIMIT 100
   `);
@@ -1150,7 +1150,9 @@ const listMatchesRoute = createRoute({
   summary: 'Paginated list of all matches (not just live)',
   request: {
     query: z.object({
-      status: z.enum(['lobby', 'submit', 'reveal', 'vote', 'results', 'cancelled']).optional(),
+      status: z
+        .enum(['lobby', 'submit', 'upload', 'reveal', 'vote', 'results', 'cancelled'])
+        .optional(),
       limit: z.coerce.number().int().min(1).max(100).default(50),
       offset: z.coerce.number().int().min(0).default(0),
     }),

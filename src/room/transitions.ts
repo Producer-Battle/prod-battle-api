@@ -220,21 +220,30 @@ export async function advancePhase(
 
 /**
  * When a submission lands, check if every seated player has submitted.
- * If so, short-circuit the submit timer and start the vote phase directly.
+ * If so, short-circuit the remaining submit/upload timer and start vote
+ * directly. Works from either the submit (produce) phase or the upload
+ * phase - everyone's done, no need to wait the buffer out.
+ *
  * Vote duration is computed as max(configured, sum_of_durations + buffer).
  */
 export async function maybeAdvanceAfterSubmission(matchId: string): Promise<void> {
   const d = db();
 
-  const [{ seated, submitted }] = (await d.execute<{ seated: number; submitted: number }>(
+  const [{ seated, submitted, current_phase }] = (await d.execute<{
+    seated: number;
+    submitted: number;
+    current_phase: string | null;
+  }>(
     sql`SELECT
           (SELECT COUNT(*)::int FROM match_players WHERE match_id = ${matchId} AND is_spectator = false) AS seated,
-          (SELECT COUNT(*)::int FROM submissions    WHERE match_id = ${matchId})                        AS submitted`,
-  )) as unknown as [{ seated: number; submitted: number }];
+          (SELECT COUNT(*)::int FROM submissions    WHERE match_id = ${matchId})                          AS submitted,
+          (SELECT current_phase::text FROM battle_phases WHERE match_id = ${matchId})                     AS current_phase`,
+  )) as unknown as [{ seated: number; submitted: number; current_phase: string | null }];
 
   if (seated > 0 && submitted >= seated) {
+    const from = current_phase === 'upload' ? 'upload' : 'submit';
     const voteDuration = await computeVoteDuration(matchId, VOTE_SECONDS_DEFAULT);
-    await advancePhase(matchId, 'submit', 'vote', voteDuration);
+    await advancePhase(matchId, from, 'vote', voteDuration);
   }
 }
 
