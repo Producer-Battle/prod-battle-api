@@ -32,7 +32,7 @@ export const SUBMIT_SECONDS_DEFAULT: Record<MatchMode, number> = {
   private: 600, // fallback if host didn't pick (shouldn't happen)
   tournament: 1800, // 30 min
   practice: 900, // 15 min
-  flip: 600, // 10 min - enough to arrange a loop, not so long it drags
+  flip: 1200, // 20 min - room to chop, arrange, and mix the source loop
   // Daily matches have no timed phase. NULL is stored in DB; this fallback
   // is used by GET /matches/:code submitSeconds response only.
   daily: 86400,
