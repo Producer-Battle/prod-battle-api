@@ -292,7 +292,10 @@ adminRoutes.openapi(listUsersRoute, async (c) => {
   const { q, role, status, limit, offset } = c.req.valid('query');
   const d = db();
 
-  const qLike = q ? `%${q}%` : null;
+  // Handles are stored without the leading "@". Strip any leading @s so a
+  // search for "@bram" or "@@bram" still matches handle "bram".
+  const qTrimmed = q?.replace(/^@+/, '');
+  const qLike = qTrimmed ? `%${qTrimmed}%` : null;
   const statusFilter = status === 'all' ? null : status;
   const rows = await d.execute<{
     id: string;
