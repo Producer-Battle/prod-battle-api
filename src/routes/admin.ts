@@ -530,6 +530,117 @@ adminRoutes.openapi(verifyEmailRoute, async (c) => {
   return c.json({ id, emailVerified: true as const, alreadyVerified: false }, 200);
 });
 
+// ─── PATCH /admin/users/:id ─────────────────────────────────────────────────
+//
+// Edit a user's identity fields. Used to fix typos that block activation
+// (wrong email at signup) or handle collisions reported via support. Both
+// fields are optional; at least one must be provided. Uniqueness is checked
+// before the update so we return a clean 409 instead of leaking the DB
+// constraint name. Handle is lower-cased to match the existing convention
+// from PATCH /me.
+
+const HANDLE_RE = /^[a-zA-Z0-9_-]{3,20}$/;
+
+const editUserRoute = createRoute({
+  method: 'patch',
+  path: '/admin/users/{id}',
+  tags: ['admin'],
+  summary: "Edit a user's email and/or handle",
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z
+            .object({
+              email: z.string().email().optional(),
+              handle: z
+                .string()
+                .regex(HANDLE_RE, 'Handle must be 3-20 chars [a-zA-Z0-9_-]')
+                .optional(),
+            })
+            .refine((b) => b.email !== undefined || b.handle !== undefined, {
+              message: 'Provide at least one of email, handle',
+            }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated',
+      content: {
+        'application/json': {
+          schema: z.object({
+            id: z.string().uuid(),
+            email: z.string(),
+            handle: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Validation error',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    401: {
+      description: 'Unauthenticated',
+      content: { 'application/json': { schema: AdminError } },
+    },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminError } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminError } } },
+    409: {
+      description: 'Email or handle already taken',
+      content: { 'application/json': { schema: AdminError } },
+    },
+  },
+});
+
+adminRoutes.openapi(editUserRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const body = c.req.valid('json');
+  const d = db();
+
+  const [existing] = await d.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+  if (!existing) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+
+  const updates: { email?: string; handle?: string; updatedAt: Date } = { updatedAt: new Date() };
+
+  if (body.email !== undefined) {
+    const email = body.email.toLowerCase();
+    const [taken] = await d.execute<{ id: string }>(
+      sql`SELECT id FROM users WHERE email = ${email} AND id != ${id} LIMIT 1`,
+    );
+    if (taken) {
+      return c.json({ error: 'email_taken', message: 'That email is already in use.' }, 409);
+    }
+    updates.email = email;
+  }
+
+  if (body.handle !== undefined) {
+    const handle = body.handle.toLowerCase();
+    const [taken] = await d.execute<{ id: string }>(
+      sql`SELECT id FROM users WHERE handle = ${handle} AND id != ${id} LIMIT 1`,
+    );
+    if (taken) {
+      return c.json({ error: 'handle_taken', message: 'That handle is already taken.' }, 409);
+    }
+    updates.handle = handle;
+  }
+
+  const [updated] = await d
+    .update(users)
+    .set(updates)
+    .where(eq(users.id, id))
+    .returning({ id: users.id, email: users.email, handle: users.handle });
+
+  if (!updated) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+  return c.json({ id: updated.id, email: updated.email, handle: updated.handle }, 200);
+});
+
 // ─── POST /admin/genres ──────────────────────────────────────────────────────
 
 const createSystemGenreRoute = createRoute({
