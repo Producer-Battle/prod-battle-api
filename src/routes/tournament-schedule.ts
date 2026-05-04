@@ -460,11 +460,15 @@ tournamentScheduleRoutes.openapi(registerRoute, async (c) => {
     .from(users)
     .where(eq(users.id, user.id))
     .limit(1);
-  if ((u?.honor ?? 100) < honorRules.gates.tournament) {
+  // honorRules.gates may be missing or partially populated on rows that
+  // predate the current schema. Default to 70 (the documented gate).
+  const tournamentGate = honorRules.gates?.tournament ?? 70;
+  const userHonor = u?.honor ?? 100;
+  if (userHonor < tournamentGate) {
     return c.json(
       {
         error: 'low_honor',
-        message: `Honor too low for tournaments (need ${honorRules.gates.tournament}, have ${u?.honor ?? 100}).`,
+        message: `Honor too low for tournaments (need ${tournamentGate}, have ${userHonor}).`,
       },
       403,
     );

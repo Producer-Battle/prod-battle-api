@@ -72,6 +72,20 @@ app.use('*', anonId());
 
 registerRoutes(app);
 
+// Catch unhandled errors from any route. Without this, Hono's default sends
+// the client a bare 500 with no body - we lose the actual error text and
+// can't diagnose prod incidents (e.g. the tournament register 500 reported
+// 2026-05-04). Always log the full error + path on the server, and return
+// a useful body that includes the message in non-production environments.
+app.onError((err, c) => {
+  logger.error('request.error', { method: c.req.method, path: c.req.path }, err);
+  const body = {
+    error: 'internal_error',
+    message: env.NODE_ENV === 'production' ? 'Internal server error.' : err.message,
+  };
+  return c.json(body, 500);
+});
+
 app.doc('/openapi.json', {
   openapi: '3.1.0',
   info: {
