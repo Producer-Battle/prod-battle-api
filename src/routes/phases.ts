@@ -147,9 +147,11 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return c.json({ error: 'match not found' }, 404);
 
-  // Daily matches allow voting at any time (both 'submit' and 'results' status).
-  // All other modes require vote phase. 'reveal' is no longer a valid phase.
-  if (m.mode !== 'daily' && m.status !== 'vote') {
+  // All modes require status='vote' to accept ballots. Daily matches used to
+  // allow voting during 'submit' and 'results' indefinitely; that open-window
+  // behaviour is gone - daily now follows the same two-day cycle as other
+  // modes and votes are only accepted during the dedicated vote window.
+  if (m.status !== 'vote') {
     return c.json({ error: `match not in vote phase (status=${m.status})` }, 400);
   }
 
@@ -319,7 +321,7 @@ phasesRoutes.openapi(voteRoute, async (c) => {
   }
 
   // For non-daily matches: short-circuit to results if every eligible voter is done.
-  // Daily matches stay in their current status - voting is always open.
+  // Daily matches are advanced by the nightly dailyRolloverCheck, not here.
   if (m.mode !== 'daily') {
     await maybeAdvanceAfterVote(m.id);
   }

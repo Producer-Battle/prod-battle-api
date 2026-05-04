@@ -65,18 +65,19 @@ describe('mode: daily (Daily Challenge)', () => {
     const subB = await submitTrack(appB, code, bUser.handle, { durationSec: 150 });
     expect(subA).not.toBe(subB);
 
-    // Daily matches stay in 'submit' status - votes are accepted anyway.
+    // Daily matches stay in 'submit' status during the submission window.
+    // Votes are NOT accepted until the match flips to 'vote' (day N+1).
     const reveal = await getReveal(app, code);
     expect(reveal).toHaveLength(2);
 
-    const voteRes = await postJson(appB, `/rooms/${code}/vote`, {
+    // Voting during 'submit' phase must be rejected.
+    const voteWhileSubmit = await postJson(appB, `/rooms/${code}/vote`, {
       user: bUser.handle,
       votes: [{ submissionId: subA, score: 5 }],
     });
-    expect(voteRes.status).toBe(200);
+    expect(voteWhileSubmit.status).toBe(400);
 
-    // Daily matches don't run tally/rank until the UTC rollover. The
-    // results endpoint still returns the submissions (rank=0 until then).
+    // The results endpoint still returns the submissions (rank=0 until rollover).
     const results = await getResults(app, code);
     expect(results.map((r) => r.submissionId).sort()).toEqual([subA, subB].sort());
 

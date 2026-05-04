@@ -27,7 +27,7 @@ const NULL_DURATION_FALLBACK = 30; // assumed duration when durationSec is NULL
  * submitters when their only voter's ballot got filtered - the match
  * looked like nobody won when in fact one producer was the lone submitter.
  */
-async function tallyResults(matchId: string): Promise<void> {
+export async function tallyResults(matchId: string): Promise<void> {
   const d = db();
 
   // Collect scores keyed by submission.

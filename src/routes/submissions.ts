@@ -185,11 +185,25 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
     return c.json({ error: 'already submitted' }, 409);
   }
 
-  // For daily matches: enforce paid-tier gate, the 20-unique-submitter cap,
-  // and the song-length window (90s..240s). Daily is a 24-hour async window
-  // so we can ask for a real song; producers don't get away with a 30-second
-  // loop. Battle modes intentionally don't enforce minimum length.
+  // For daily matches: enforce the submission window, paid-tier gate, the
+  // 20-unique-submitter cap, and the song-length window (90s..240s). Daily
+  // is a 24-hour async window so we can ask for a real song; producers don't
+  // get away with a 30-second loop. Battle modes intentionally don't enforce
+  // minimum length.
   if (result.match.mode === 'daily') {
+    // Submissions are only accepted during the 'submit' phase. Once voting
+    // opens (status='vote') or the match is finalised (status='results'),
+    // the window is closed.
+    if (result.match.status !== 'submit') {
+      return c.json(
+        {
+          error: 'submit_window_closed',
+          message: 'Daily Challenge submissions are closed for today. Come back tomorrow.',
+        },
+        400,
+      );
+    }
+
     const user = c.var.user;
     if (!user || (user.plan !== 'paid' && user.role !== 'admin')) {
       return c.json(

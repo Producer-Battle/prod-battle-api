@@ -13,10 +13,10 @@
 //   NOTHING followed by a re-select.
 // - The match starts in 'submit' status (no lobby phase). team_count=20
 //   represents the max submitters cap. team_size=1 (each submitter is solo).
-// - Yesterday's (and older) daily matches are transitioned to 'results' at
-//   rollover - see the daily rollover check in realtime/tick.ts.
-// - Votes on results-status daily matches remain open indefinitely (no phase
-//   gate in the vote endpoint for mode='daily').
+// - Two-day cycle: dailyRolloverCheck() in realtime/tick.ts transitions
+//   submit->vote at day N+1 00:00 UTC, then vote->results at day N+2 00:00 UTC.
+// - Voting is only accepted during status='vote'. The vote endpoint enforces
+//   this uniformly for all match modes.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, eq, sql } from 'drizzle-orm';

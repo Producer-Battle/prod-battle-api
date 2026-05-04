@@ -8,17 +8,26 @@
 // is flushed forward to 'vote' on the next tick (one-shot migration path).
 //
 // Daily matches are NOT driven by battle_phases. Instead, a separate check
-// (dailyRolloverCheck) runs on the same tick cadence and transitions any
-// mode='daily' match whose daily_date < today from 'submit' to 'results'.
+// (dailyRolloverCheck) runs on the same tick cadence and implements a
+// two-day cycle:
+//   Day N     (status='submit')  - producers submit. Voting is blocked.
+//   Day N+1   (status='vote')    - voting opens. Email batch sent to submitters.
+//   Day N+2   (status='results') - voting closes. tallyResults() runs.
 
 import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { sql } from 'drizzle-orm';
 import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
+import { sendEmail } from '../mail/send.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { UPLOAD_PHASE_SECONDS, nextPhase } from '../room/state.js';
-import { VOTE_SECONDS_DEFAULT, computeVoteDuration, onEnterPhase } from '../room/transitions.js';
+import {
+  VOTE_SECONDS_DEFAULT,
+  computeVoteDuration,
+  onEnterPhase,
+  tallyResults,
+} from '../room/transitions.js';
 import { runAsLeader } from './leader.js';
 import { publish } from './pubsub.js';
 
@@ -156,20 +165,29 @@ async function tick(): Promise<void> {
 }
 
 /**
- * Transition yesterday's (and older) daily matches from 'submit' to 'results'.
- * Runs on every tick but the SQL WHERE clause is a no-op on most ticks
- * (only fires when daily_date < today, i.e. at rollover).
+ * Two-step daily rollover. Runs on every tick but the SQL WHERE clauses
+ * are no-ops on most ticks - they only fire at the UTC day boundary.
  *
- * Voting remains open on results-status daily matches indefinitely - the vote
- * endpoint allows votes regardless of match status when mode='daily'.
+ * Step A: submit -> vote
+ *   Matches with status='submit' AND daily_date < today flip to 'vote'.
+ *   A batch email is sent to every submitter: "Voting is now open".
+ *   Failures in the email send are logged but do not block the rollover.
+ *
+ * Step B: vote -> results
+ *   Matches with status='vote' AND daily_date < today - 1 day flip to
+ *   'results'. tallyResults() runs to compute final_rank and scores.
+ *
+ * Both steps are idempotent: the WHERE clause checks current status, so
+ * a match already at 'vote' or 'results' is never touched again.
  */
-async function dailyRolloverCheck(): Promise<void> {
+export async function dailyRolloverCheck(): Promise<void> {
   const d = db();
   const today = new Date().toISOString().slice(0, 10);
 
-  // Find daily matches stuck in 'submit' from previous days.
-  const stale = await d.execute<{ id: string; room_code: string }>(
-    sql`SELECT id, room_code
+  // ── Step A: submit -> vote ───────────────────────────────────────────
+  // Daily matches whose submission window has ended (daily_date < today).
+  const submitStale = await d.execute<{ id: string; room_code: string; primary_genre_id: string }>(
+    sql`SELECT id, room_code, primary_genre_id
           FROM matches
          WHERE mode = 'daily'
            AND status = 'submit'
@@ -177,18 +195,56 @@ async function dailyRolloverCheck(): Promise<void> {
          LIMIT 20`,
   );
 
-  for (const row of stale as Array<{ id: string; room_code: string }>) {
+  for (const row of submitStale as Array<{
+    id: string;
+    room_code: string;
+    primary_genre_id: string;
+  }>) {
+    // Flip status to 'vote' on both matches and battle_phases (if a row exists).
+    await d.update(matches).set({ status: 'vote' }).where(sql`${matches.id} = ${row.id}`);
+
+    await d.execute(
+      sql`UPDATE battle_phases
+             SET current_phase = 'vote'::match_phase
+           WHERE match_id = ${row.id}`,
+    );
+
+    await publish(`battle:${row.id}`, {
+      type: 'phase_change',
+      matchId: row.id,
+      phase: 'vote',
+      transitionsAt: null,
+    });
+
+    console.log(`[tick] daily ${row.id} (${row.room_code}): submit -> vote`);
+
+    // Send vote-open email to every submitter. Failures are non-fatal.
+    await sendDailyVoteOpenEmails(row.id, row.room_code).catch((err: Error) =>
+      console.error(`[tick] daily vote-open email failed for ${row.id}: ${err.message}`),
+    );
+  }
+
+  // ── Step B: vote -> results ──────────────────────────────────────────
+  // Daily matches whose voting window has ended (daily_date < today - 1).
+  const voteStale = await d.execute<{ id: string; room_code: string }>(
+    sql`SELECT id, room_code
+          FROM matches
+         WHERE mode = 'daily'
+           AND status = 'vote'
+           AND daily_date < (${today}::date - interval '1 day')
+         LIMIT 20`,
+  );
+
+  for (const row of voteStale as Array<{ id: string; room_code: string }>) {
+    // Set voteOutcome before tally so the Results UI can read it.
     await d
       .update(matches)
-      .set({ status: 'results', endedAt: new Date() })
+      .set({ voteOutcome: 'complete', endedAt: new Date() })
       .where(sql`${matches.id} = ${row.id}`);
 
-    // Run the standard results-phase side effects so honor + tally fire
-    // for the daily match the same way they do for live battles. Without
-    // this hook the daily match transitions to results without applying
-    // any honor delta.
-    await onEnterPhase(row.id, 'results').catch((err: Error) =>
-      console.error(`[tick] daily onEnterPhase failed for ${row.id}: ${err.message}`),
+    // tallyResults writes score + final_rank and flips status to 'results'.
+    await tallyResults(row.id).catch((err: Error) =>
+      console.error(`[tick] daily tallyResults failed for ${row.id}: ${err.message}`),
     );
 
     await publish(`battle:${row.id}`, {
@@ -198,7 +254,53 @@ async function dailyRolloverCheck(): Promise<void> {
       transitionsAt: null,
     });
 
-    console.log(`[tick] daily match ${row.id} (${row.room_code}) rolled over to results`);
+    console.log(`[tick] daily ${row.id} (${row.room_code}): vote -> results`);
+  }
+}
+
+/**
+ * Send "voting is now open" emails to every producer who submitted to a
+ * daily match. Called once per match at the submit->vote transition.
+ * Individual send failures are logged and swallowed so one bad address
+ * does not prevent the rest of the batch.
+ */
+async function sendDailyVoteOpenEmails(matchId: string, roomCode: string): Promise<void> {
+  const d = db();
+
+  const submitters = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT u.email, u.handle
+          FROM submissions s
+          JOIN users u ON u.id = s.user_id
+         WHERE s.match_id = ${matchId}
+           AND u.email IS NOT NULL`,
+  );
+
+  const voteUrl = `https://prodbattle.com/room/${roomCode}`;
+
+  for (const row of submitters as Array<{ email: string; handle: string }>) {
+    await sendEmail({
+      from: 'support@prodbattle.com',
+      to: row.email,
+      subject: 'Daily Challenge voting is now open',
+      text: [
+        `Hi ${row.handle},`,
+        '',
+        "Voting is now open on yesterday's Daily Challenge.",
+        `Listen to the entries and score them: ${voteUrl}`,
+        '',
+        'Voting closes at 00:00 UTC tomorrow.',
+        '',
+        '- The Producer Battle team',
+      ].join('\n'),
+      html: [
+        `<p>Hi ${row.handle},</p>`,
+        "<p>Voting is now open on yesterday's Daily Challenge.</p>",
+        `<p><a href="${voteUrl}">Listen to the entries and score them</a> - voting closes at 00:00 UTC tomorrow.</p>`,
+        '<p>- The Producer Battle team</p>',
+      ].join(''),
+    }).catch((err: Error) =>
+      console.error(`[tick] vote-open email to ${row.email} failed: ${err.message}`),
+    );
   }
 }
 
