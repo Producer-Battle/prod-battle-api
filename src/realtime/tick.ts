@@ -942,20 +942,31 @@ export async function tournamentScheduleScan(): Promise<void> {
     );
   }
 
-  // ── 2. Close showcase when window expires, then open round 1 ─────────
-  const closedShowcase = await d.execute<{ id: string }>(
-    sql`SELECT id FROM tournaments
+  // ── 2. Close showcase when window expires ────────────────────────────
+  // If bracket_enabled = false: finalize + crown showcase winner as tournament
+  // champion (no bracket). If bracket_enabled = true: finalize + open round 1,
+  // which pre-populates round-1 submissions from showcase tracks.
+  const closedShowcase = await d.execute<{ id: string; bracket_enabled: boolean }>(
+    sql`SELECT id, bracket_enabled FROM tournaments
          WHERE status = 'showcase'
            AND showcase_ends_at < now()
          LIMIT 10`,
   );
-  for (const row of closedShowcase as Array<{ id: string }>) {
+  for (const row of closedShowcase as Array<{ id: string; bracket_enabled: boolean }>) {
     await finalizeShowcase(row.id).catch((err: Error) =>
       console.error('[tournament-sched] finalizeShowcase failed:', err.message),
     );
-    await openRound1(row.id).catch((err: Error) =>
-      console.error('[tournament-sched] openRound1 failed:', err.message),
-    );
+    if (!row.bracket_enabled) {
+      // Showcase-only tournament: crown the rank-1 showcase user as winner.
+      await finalizeShowcaseOnlyTournament(row.id).catch((err: Error) =>
+        console.error('[tournament-sched] finalizeShowcaseOnlyTournament failed:', err.message),
+      );
+    } else {
+      // Bracket tournament: open round 1 (reusing showcase submissions).
+      await openRound1(row.id).catch((err: Error) =>
+        console.error('[tournament-sched] openRound1 failed:', err.message),
+      );
+    }
   }
 
   // ── 3. Advance in-progress tournaments to next round (or finish) ──────
@@ -1036,6 +1047,58 @@ export async function finalizeShowcase(tournamentId: string): Promise<void> {
   console.log(`[showcase] ${tournamentId}: finalized (${ranked.length} submissions ranked)`);
 }
 
+/**
+ * Crown the rank-1 showcase submitter as the tournament winner for
+ * bracket_enabled=false tournaments. Called after finalizeShowcase has
+ * already written final_rank to each showcase submission row.
+ *
+ * Side effects:
+ *   - Sets tournaments.winner_id, status='finished'.
+ *   - Awards tournament_winner achievement to rank-1 user.
+ *   - Sends the champion email if the user has opted in.
+ */
+export async function finalizeShowcaseOnlyTournament(tournamentId: string): Promise<void> {
+  const d = db();
+
+  // Find rank-1 showcase submission (set by finalizeShowcase).
+  const rank1Rows = await d.execute<{ user_id: string }>(
+    sql`SELECT user_id FROM tournament_showcase_submissions
+         WHERE tournament_id = ${tournamentId}
+           AND final_rank = 1
+         LIMIT 1`,
+  );
+  const rank1 = (rank1Rows as Array<{ user_id: string }>)[0];
+
+  if (rank1) {
+    const winnerId = rank1.user_id;
+    await d.execute(
+      sql`UPDATE tournaments
+             SET status = 'finished',
+                 winner_id = ${winnerId}
+           WHERE id = ${tournamentId}`,
+    );
+    await d.execute(
+      sql`INSERT INTO achievements (user_id, achievement_key)
+            VALUES (${winnerId}, 'tournament_winner')
+          ON CONFLICT DO NOTHING`,
+    );
+    console.log(`[showcase-only] ${tournamentId}: winner crowned ${winnerId}`);
+
+    const { notifyChampion } = await import('../mail/touchpoints.js');
+    void notifyChampion(tournamentId, winnerId).catch((err: Error) =>
+      console.error(`[showcase-only] notifyChampion failed: ${err.message}`),
+    );
+  } else {
+    // No submissions - finish with no winner.
+    await d.execute(
+      sql`UPDATE tournaments
+             SET status = 'finished'
+           WHERE id = ${tournamentId}`,
+    );
+    console.log(`[showcase-only] ${tournamentId}: finished with no submissions`);
+  }
+}
+
 export async function openRound1(tournamentId: string): Promise<void> {
   const d = db();
   const [t] = (await d.execute<{
@@ -1068,8 +1131,35 @@ export async function openRound1(tournamentId: string): Promise<void> {
   let size = 1;
   while (size * 2 <= cap) size *= 2;
 
-  // Shuffle for seeding.
+  // Shuffle for seeding. For bracket-seeded-from-showcase tournaments,
+  // top showcase performers should be placed in opposite halves so they
+  // only meet in the final. Here we do a simple random shuffle which is
+  // fine for the current spec; the showcase-seeding path is the key change.
   const seeded = arr.slice(0, size).sort(() => Math.random() - 0.5);
+
+  // Load showcase submissions so we can pre-seed round-1 matches.
+  // Map: user_id -> { audio_url, title, duration_sec }
+  const showcaseRows = await d.execute<{
+    user_id: string;
+    audio_url: string;
+    title: string | null;
+    duration_sec: number | null;
+  }>(
+    sql`SELECT user_id, audio_url, title, duration_sec
+          FROM tournament_showcase_submissions
+         WHERE tournament_id = ${tournamentId}`,
+  );
+  const showcaseByUser = new Map(
+    (
+      showcaseRows as Array<{
+        user_id: string;
+        audio_url: string;
+        title: string | null;
+        duration_sec: number | null;
+      }>
+    ).map((r) => [r.user_id, r]),
+  );
+  const hasShowcase = showcaseByUser.size > 0;
 
   // Generate `size/2` round-1 matches with primary_genre_id = tournament.genre_id.
   // If submitSecondsOverride is set, pass it to the match row; otherwise leave null
@@ -1080,40 +1170,99 @@ export async function openRound1(tournamentId: string): Promise<void> {
     const b = seeded[i + 1];
     if (!a || !b) continue;
     const roomCode = generateRoomCode();
-    const [m] = (await d.execute<{ id: string }>(
-      override !== null
-        ? sql`INSERT INTO matches
-                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
-                 tournament_id, tournament_round, submit_seconds)
-                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
-                        ${tournamentId}, 1, ${override})
-                RETURNING id`
-        : sql`INSERT INTO matches
-                (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
-                 tournament_id, tournament_round)
-                VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
-                        ${tournamentId}, 1)
-                RETURNING id`,
-    )) as Array<{ id: string }>;
-    if (!m) continue;
-    await d.execute(
-      sql`INSERT INTO match_teams (match_id, seat, name) VALUES (${m.id}, 0, 'A'), (${m.id}, 1, 'B')`,
-    );
-    await d.execute(
-      sql`INSERT INTO match_players (match_id, user_id, is_spectator, ready) VALUES
-            (${m.id}, ${a.user_id}, false, false),
-            (${m.id}, ${b.user_id}, false, false)`,
-    );
-    await d.execute(
-      sql`INSERT INTO battle_phases (match_id, current_phase, transitions_at)
-            VALUES (${m.id}, 'lobby'::match_phase, now() + interval '24 hours')`,
-    );
+
+    if (hasShowcase) {
+      // Showcase-seeded path: create match at status='vote' with pre-populated
+      // submissions. Producers don't need to re-upload; voters can listen and
+      // score straight away.
+      const [m] = (await d.execute<{ id: string }>(
+        override !== null
+          ? sql`INSERT INTO matches
+                  (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                   tournament_id, tournament_round, submit_seconds)
+                  VALUES ('tournament', 'vote', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                          ${tournamentId}, 1, ${override})
+                  RETURNING id`
+          : sql`INSERT INTO matches
+                  (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                   tournament_id, tournament_round)
+                  VALUES ('tournament', 'vote', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                          ${tournamentId}, 1)
+                  RETURNING id`,
+      )) as Array<{ id: string }>;
+      if (!m) continue;
+
+      await d.execute(
+        sql`INSERT INTO match_teams (match_id, seat, name) VALUES (${m.id}, 0, 'A'), (${m.id}, 1, 'B')`,
+      );
+      await d.execute(
+        sql`INSERT INTO match_players (match_id, user_id, is_spectator, ready) VALUES
+              (${m.id}, ${a.user_id}, false, false),
+              (${m.id}, ${b.user_id}, false, false)`,
+      );
+
+      // Copy showcase tracks into submissions for each player.
+      for (const player of [a, b]) {
+        const showcase = showcaseByUser.get(player.user_id);
+        if (!showcase) continue;
+        await d.execute(
+          sql`INSERT INTO submissions
+                (match_id, user_id, genre_id, audio_url, title, duration_sec, score)
+              VALUES
+                (${m.id}, ${player.user_id}, ${t.genre_id},
+                 ${showcase.audio_url}, ${showcase.title ?? null},
+                 ${showcase.duration_sec ?? null}, 0)`,
+        );
+      }
+
+      // Set vote phase with computed duration (lazy import to avoid circular deps).
+      const { computeVoteDuration: cvd } = await import('../room/transitions.js');
+      const voteDuration = await cvd(m.id, VOTE_SECONDS_DEFAULT);
+      const voteEndsAt = new Date(Date.now() + voteDuration * 1000);
+      await d.execute(
+        sql`INSERT INTO battle_phases (match_id, current_phase, transitions_at)
+              VALUES (${m.id}, 'vote'::match_phase, ${voteEndsAt.toISOString()}::timestamptz)`,
+      );
+    } else {
+      // No showcase - fall back to standard lobby flow so producers can
+      // upload fresh tracks.
+      const [m] = (await d.execute<{ id: string }>(
+        override !== null
+          ? sql`INSERT INTO matches
+                  (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                   tournament_id, tournament_round, submit_seconds)
+                  VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                          ${tournamentId}, 1, ${override})
+                  RETURNING id`
+          : sql`INSERT INTO matches
+                  (mode, status, room_code, team_size, team_count, primary_genre_id, sample_mode,
+                   tournament_id, tournament_round)
+                  VALUES ('tournament', 'lobby', ${roomCode}, 1, 2, ${t.genre_id}, 'generated',
+                          ${tournamentId}, 1)
+                  RETURNING id`,
+      )) as Array<{ id: string }>;
+      if (!m) continue;
+      await d.execute(
+        sql`INSERT INTO match_teams (match_id, seat, name) VALUES (${m.id}, 0, 'A'), (${m.id}, 1, 'B')`,
+      );
+      await d.execute(
+        sql`INSERT INTO match_players (match_id, user_id, is_spectator, ready) VALUES
+              (${m.id}, ${a.user_id}, false, false),
+              (${m.id}, ${b.user_id}, false, false)`,
+      );
+      await d.execute(
+        sql`INSERT INTO battle_phases (match_id, current_phase, transitions_at)
+              VALUES (${m.id}, 'lobby'::match_phase, now() + interval '24 hours')`,
+      );
+    }
   }
 
   await d.execute(
     sql`UPDATE tournaments SET status = 'in_progress', effective_size = ${size} WHERE id = ${tournamentId}`,
   );
-  console.log(`[tournament-sched] ${tournamentId} opened round 1 with ${size / 2} matches`);
+  console.log(
+    `[tournament-sched] ${tournamentId} opened round 1 with ${size / 2} matches (showcase-seeded: ${hasShowcase})`,
+  );
 }
 
 export async function advanceRound(tournamentId: string): Promise<void> {
@@ -1395,14 +1544,18 @@ export async function weeklyTournamentScan(): Promise<void> {
   const registrationClosesAt = new Date(startsAt.getTime() - 5 * 60 * 1000);
   const name = `Weekly Battle - ${genre.name} - W${targetWeek} ${targetYear}`;
 
+  // Weekly tournaments are showcase-only (no bracket), 7-day showcase window,
+  // 32-entrant cap. bracket_enabled=false means open -> showcase -> finished
+  // without opening a head-to-head bracket afterwards.
+  const WEEKLY_SHOWCASE_SECONDS = 604800; // 7 days
   const inserted = await d.execute<{ id: string }>(
     sql`INSERT INTO tournaments
           (name, genre_id, starts_at, registration_closes_at, max_entrants,
-           submit_seconds_override, auto_created, created_by)
+           submit_seconds_override, auto_created, bracket_enabled, showcase_seconds, created_by)
         VALUES
           (${name}, ${genre.id}, ${startsAt.toISOString()}::timestamptz,
            ${registrationClosesAt.toISOString()}::timestamptz,
-           16, ${submitSecondsOverride}, true, NULL)
+           32, ${submitSecondsOverride}, true, false, ${WEEKLY_SHOWCASE_SECONDS}, NULL)
         RETURNING id`,
   );
   const newRow = (inserted as Array<{ id: string }>)[0];

@@ -75,7 +75,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'free')
     `);
     await d.execute(sql`
       INSERT INTO match_players (match_id, user_id, is_spectator)
@@ -121,7 +121,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'free')
     `);
     await d.execute(sql`
       INSERT INTO matches
@@ -180,7 +180,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'free')
     `);
     await d.execute(sql`
       INSERT INTO matches
@@ -314,7 +314,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'free')
     `);
     await d.execute(sql`
       INSERT INTO matches
@@ -352,7 +352,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'free')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'free')
     `);
     await d.execute(sql`
       INSERT INTO matches
@@ -390,7 +390,7 @@ describe('staleMatchSweep', () => {
     const userId = randomUUID();
     await d.execute(sql`
       INSERT INTO users (id, email, handle, role, plan)
-      VALUES (${userId}, ${`${userId}@test.local`}, ${userId}, 'producer', 'paid')
+      VALUES (${userId}, ${`${userId}@test.local`}, ${userId.replace(/-/g, '').slice(0, 20)}, 'producer', 'paid')
     `);
     await d.execute(sql`
       INSERT INTO matches

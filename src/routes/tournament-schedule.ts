@@ -29,10 +29,12 @@ const TournamentSummary = z.object({
   genreName: z.string(),
   startsAt: z.string().datetime(),
   registrationClosesAt: z.string().datetime(),
-  status: z.enum(['open', 'starting', 'in_progress', 'finished', 'cancelled']),
+  status: z.enum(['open', 'showcase', 'starting', 'in_progress', 'finished', 'cancelled']),
   maxEntrants: z.number().int(),
   entrantCount: z.number().int(),
   registered: z.boolean(),
+  bracketEnabled: z.boolean(),
+  showcaseEndsAt: z.string().datetime().nullable(),
 });
 
 const TournamentMatch = z.object({
@@ -48,6 +50,7 @@ const TournamentDetail = TournamentSummary.extend({
   entrants: z.array(z.object({ handle: z.string() })),
   bracket: z.array(TournamentMatch),
   winnerHandle: z.string().nullable(),
+  showcaseLeaderboard: z.array(z.object({ handle: z.string(), finalRank: z.number().int() })),
 });
 
 // ─── GET /tournaments/upcoming ─────────────────────────────────────────────
@@ -80,14 +83,17 @@ tournamentScheduleRoutes.openapi(upcomingRoute, async (c) => {
     max_entrants: number;
     entrant_count: string;
     is_registered: boolean;
+    bracket_enabled: boolean;
+    showcase_ends_at: Date | string | null;
   }>(
     sql`SELECT t.id, t.name, g.slug AS genre_slug, g.name AS genre_name,
                t.starts_at, t.registration_closes_at, t.status, t.max_entrants,
+               t.bracket_enabled, t.showcase_ends_at,
                (SELECT COUNT(*)::text FROM tournament_entries te WHERE te.tournament_id = t.id) AS entrant_count,
                (${callerId ? sql`EXISTS (SELECT 1 FROM tournament_entries te2 WHERE te2.tournament_id = t.id AND te2.user_id = ${callerId})` : sql`FALSE`}) AS is_registered
           FROM tournaments t
           JOIN genres g ON g.id = t.genre_id
-         WHERE t.status IN ('open', 'starting', 'in_progress')
+         WHERE t.status IN ('open', 'showcase', 'starting', 'in_progress')
          ORDER BY t.starts_at ASC
          LIMIT 50`,
   );
@@ -102,6 +108,8 @@ tournamentScheduleRoutes.openapi(upcomingRoute, async (c) => {
     max_entrants: number;
     entrant_count: string;
     is_registered: boolean;
+    bracket_enabled: boolean;
+    showcase_ends_at: Date | string | null;
   }>;
   return c.json(
     {
@@ -112,10 +120,18 @@ tournamentScheduleRoutes.openapi(upcomingRoute, async (c) => {
         genreName: r.genre_name,
         startsAt: new Date(r.starts_at).toISOString(),
         registrationClosesAt: new Date(r.registration_closes_at).toISOString(),
-        status: r.status as 'open' | 'starting' | 'in_progress' | 'finished' | 'cancelled',
+        status: r.status as
+          | 'open'
+          | 'showcase'
+          | 'starting'
+          | 'in_progress'
+          | 'finished'
+          | 'cancelled',
         maxEntrants: Number(r.max_entrants),
         entrantCount: Number(r.entrant_count),
         registered: !!r.is_registered,
+        bracketEnabled: !!r.bracket_enabled,
+        showcaseEndsAt: r.showcase_ends_at ? new Date(r.showcase_ends_at).toISOString() : null,
       })),
     },
     200,
@@ -152,9 +168,12 @@ tournamentScheduleRoutes.openapi(pastRoute, async (c) => {
     max_entrants: number;
     entrant_count: string;
     is_registered: boolean;
+    bracket_enabled: boolean;
+    showcase_ends_at: Date | string | null;
   }>(
     sql`SELECT t.id, t.name, g.slug AS genre_slug, g.name AS genre_name,
                t.starts_at, t.registration_closes_at, t.status, t.max_entrants,
+               t.bracket_enabled, t.showcase_ends_at,
                (SELECT COUNT(*)::text FROM tournament_entries te WHERE te.tournament_id = t.id) AS entrant_count,
                (${callerId ? sql`EXISTS (SELECT 1 FROM tournament_entries te2 WHERE te2.tournament_id = t.id AND te2.user_id = ${callerId})` : sql`FALSE`}) AS is_registered
           FROM tournaments t
@@ -174,6 +193,8 @@ tournamentScheduleRoutes.openapi(pastRoute, async (c) => {
     max_entrants: number;
     entrant_count: string;
     is_registered: boolean;
+    bracket_enabled: boolean;
+    showcase_ends_at: Date | string | null;
   }>;
   return c.json(
     {
@@ -184,10 +205,18 @@ tournamentScheduleRoutes.openapi(pastRoute, async (c) => {
         genreName: r.genre_name,
         startsAt: new Date(r.starts_at).toISOString(),
         registrationClosesAt: new Date(r.registration_closes_at).toISOString(),
-        status: r.status as 'open' | 'starting' | 'in_progress' | 'finished' | 'cancelled',
+        status: r.status as
+          | 'open'
+          | 'showcase'
+          | 'starting'
+          | 'in_progress'
+          | 'finished'
+          | 'cancelled',
         maxEntrants: Number(r.max_entrants),
         entrantCount: Number(r.entrant_count),
         registered: !!r.is_registered,
+        bracketEnabled: !!r.bracket_enabled,
+        showcaseEndsAt: r.showcase_ends_at ? new Date(r.showcase_ends_at).toISOString() : null,
       })),
     },
     200,
@@ -226,6 +255,8 @@ tournamentScheduleRoutes.openapi(detailRoute, async (c) => {
       status: tournaments.status,
       maxEntrants: tournaments.maxEntrants,
       winnerId: tournaments.winnerId,
+      bracketEnabled: tournaments.bracketEnabled,
+      showcaseEndsAt: tournaments.showcaseEndsAt,
     })
     .from(tournaments)
     .where(eq(tournaments.id, id))
@@ -280,6 +311,19 @@ tournamentScheduleRoutes.openapi(detailRoute, async (c) => {
       )) as Array<{ handle: string }>)
     : null;
 
+  // For showcase-only tournaments, expose ranked showcase submissions as
+  // a leaderboard so the UI can show the podium without a bracket.
+  const showcaseLeaderboard = !t.bracketEnabled
+    ? ((await d.execute<{ handle: string; final_rank: number }>(
+        sql`SELECT u.handle, tss.final_rank
+              FROM tournament_showcase_submissions tss
+              JOIN users u ON u.id = tss.user_id
+             WHERE tss.tournament_id = ${id}
+               AND tss.final_rank IS NOT NULL
+             ORDER BY tss.final_rank ASC`,
+      )) as Array<{ handle: string; final_rank: number }>)
+    : [];
+
   const isRegistered = callerId ? entrants.some((e) => e.user_id === callerId) : false;
 
   return c.json(
@@ -290,10 +334,18 @@ tournamentScheduleRoutes.openapi(detailRoute, async (c) => {
       genreName: g?.name ?? '',
       startsAt: t.startsAt.toISOString(),
       registrationClosesAt: t.registrationClosesAt.toISOString(),
-      status: t.status as 'open' | 'starting' | 'in_progress' | 'finished' | 'cancelled',
+      status: t.status as
+        | 'open'
+        | 'showcase'
+        | 'starting'
+        | 'in_progress'
+        | 'finished'
+        | 'cancelled',
       maxEntrants: t.maxEntrants,
       entrantCount: entrants.length,
       registered: isRegistered,
+      bracketEnabled: t.bracketEnabled,
+      showcaseEndsAt: t.showcaseEndsAt ? new Date(t.showcaseEndsAt).toISOString() : null,
       entrants: entrants.map((e) => ({ handle: e.handle })),
       bracket: bracket.map((b) => ({
         matchId: b.match_id,
@@ -304,6 +356,10 @@ tournamentScheduleRoutes.openapi(detailRoute, async (c) => {
         winner: b.winner_handle,
       })),
       winnerHandle: winnerHandle?.[0]?.handle ?? null,
+      showcaseLeaderboard: showcaseLeaderboard.map((r) => ({
+        handle: r.handle,
+        finalRank: Number(r.final_rank),
+      })),
     },
     200,
   );

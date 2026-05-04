@@ -5,6 +5,10 @@
 //   -> advanceRound marks the tournament finished + sets winner_id +
 //      awards the tournament_winner achievement.
 //
+// Also covers the showcase-seeds-round-1 path:
+//   showcase submissions pre-populate round-1 matches at status='vote'
+//   so producers don't upload again for round 1.
+//
 // We drive the schedule helpers directly (openRound1, advanceRound) rather
 // than waiting for the tick worker so the test is deterministic. The
 // production tick still calls these via tournamentScheduleScan; this test
@@ -13,7 +17,7 @@
 import { sql } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { db } from '../../db/client.js';
-import { advanceRound, openRound1 } from '../../realtime/tick.js';
+import { advanceRound, finalizeShowcase, openRound1 } from '../../realtime/tick.js';
 import { advancePhase } from '../../room/transitions.js';
 import { buildTestApp, getMatch, postJson, submitTrack, uniqueHandle } from '../harness.js';
 import { TEST_GENRE_SLUG, resetMatchState, seedTestFixtures, seedTestUser } from '../seed.js';
@@ -26,22 +30,37 @@ async function genreId(): Promise<string> {
   return rows[0].id;
 }
 
-async function insertOpenTournament(): Promise<string> {
+async function insertOpenTournament(overrides?: { bracketEnabled?: boolean }): Promise<string> {
   // status='open', registration window open for 1h, max_entrants=4.
+  const bracketEnabled = overrides?.bracketEnabled ?? true;
   const id = (
     (await db().execute<{ id: string }>(
       sql`INSERT INTO tournaments
             (name, genre_id, starts_at, registration_closes_at, max_entrants,
-             auto_created, created_by, status)
+             auto_created, bracket_enabled, created_by, status)
           VALUES
             ('Test bracket', ${await genreId()},
              now() + interval '2 hours', now() + interval '1 hour',
-             4, true, NULL, 'open')
+             4, true, ${bracketEnabled}, NULL, 'open')
           RETURNING id`,
     )) as Array<{ id: string }>
   )[0]?.id;
   if (!id) throw new Error('failed to insert tournament');
   return id;
+}
+
+async function insertShowcaseSubmissionForUser(
+  tournamentId: string,
+  userId: string,
+): Promise<void> {
+  await db().execute(
+    sql`INSERT INTO tournament_showcase_submissions
+          (tournament_id, user_id, audio_url, title, duration_sec, score)
+        VALUES
+          (${tournamentId}, ${userId}, 'https://cdn.example.com/showcase.mp3',
+           'Showcase track', 90, 0)
+        ON CONFLICT (tournament_id, user_id) DO NOTHING`,
+  );
 }
 
 async function backdateRegistration(tournamentId: string): Promise<void> {
@@ -298,5 +317,107 @@ describe('tournament bracket cycle', () => {
     const res = await postJson(app, `/tournaments/${tournamentId}/register`, {});
     expect(res.status).toBe(403);
     expect((res.json as { error: string }).error).toBe('low_honor');
+  });
+
+  it('showcase-seeded round 1: matches start at status=vote with pre-filled submissions', async () => {
+    // bracket_enabled=true with showcase submissions -> openRound1 must create
+    // round-1 matches at status='vote' and pre-populate submissions from showcase.
+    const tournamentId = await insertOpenTournament({ bracketEnabled: true });
+
+    const producers = await Promise.all(
+      ['sc-p1', 'sc-p2', 'sc-p3', 'sc-p4'].map((tag) =>
+        seedTestUser(uniqueHandle(`tn-${tag}`), { plan: 'free', role: 'producer' }),
+      ),
+    );
+    for (const p of producers) {
+      const app = buildTestApp({ asUser: p });
+      const res = await postJson(app, `/tournaments/${tournamentId}/register`, {});
+      expect(res.status).toBe(201);
+    }
+
+    // Simulate showcase phase: each producer uploads a track.
+    await db().execute(
+      sql`UPDATE tournaments
+             SET status = 'showcase',
+                 showcase_starts_at = now(),
+                 showcase_ends_at = now() + interval '1 hour'
+           WHERE id = ${tournamentId}`,
+    );
+    for (const p of producers) {
+      await insertShowcaseSubmissionForUser(tournamentId, p.id);
+    }
+
+    // finalizeShowcase writes final_rank to the showcase rows.
+    await finalizeShowcase(tournamentId);
+
+    // openRound1 should detect the showcase submissions and seed round-1 at 'vote'.
+    await backdateRegistration(tournamentId);
+    await openRound1(tournamentId);
+
+    const round1Matches = (await db().execute<{
+      id: string;
+      status: string;
+      tournament_round: number;
+    }>(
+      sql`SELECT id, status, tournament_round
+            FROM matches
+           WHERE tournament_id = ${tournamentId}
+             AND tournament_round = 1
+           ORDER BY created_at ASC`,
+    )) as Array<{ id: string; status: string; tournament_round: number }>;
+
+    // 4 entrants -> 2 round-1 matches.
+    expect(round1Matches).toHaveLength(2);
+
+    for (const m of round1Matches) {
+      // Matches should be inserted at status='vote' (not 'lobby').
+      expect(m.status).toBe('vote');
+      expect(m.tournament_round).toBe(1);
+
+      // Each match should have 2 pre-populated submissions (from showcase).
+      const subCount = Number(
+        (
+          (await db().execute<{ n: string }>(
+            sql`SELECT COUNT(*)::text AS n FROM submissions WHERE match_id = ${m.id}`,
+          )) as Array<{ n: string }>
+        )[0]?.n ?? '0',
+      );
+      expect(subCount).toBe(2);
+
+      // battle_phases row should exist at 'vote' phase.
+      const [phase] = (await db().execute<{ current_phase: string }>(
+        sql`SELECT current_phase FROM battle_phases WHERE match_id = ${m.id}`,
+      )) as Array<{ current_phase: string }>;
+      expect(phase?.current_phase).toBe('vote');
+    }
+
+    // Tournament is in_progress.
+    const [tRow] = (await db().execute<{ status: string }>(
+      sql`SELECT status FROM tournaments WHERE id = ${tournamentId}`,
+    )) as Array<{ status: string }>;
+    expect(tRow?.status).toBe('in_progress');
+  });
+
+  it('openRound1 falls back to lobby flow when no showcase submissions exist', async () => {
+    const tournamentId = await insertOpenTournament({ bracketEnabled: true });
+
+    const producers = await Promise.all(
+      ['ns-p1', 'ns-p2'].map((tag) =>
+        seedTestUser(uniqueHandle(`tn-${tag}`), { plan: 'free', role: 'producer' }),
+      ),
+    );
+    for (const p of producers) {
+      const app = buildTestApp({ asUser: p });
+      await postJson(app, `/tournaments/${tournamentId}/register`, {});
+    }
+
+    // No showcase submissions - openRound1 should create a lobby match.
+    await backdateRegistration(tournamentId);
+    await openRound1(tournamentId);
+
+    const [m] = (await db().execute<{ status: string }>(
+      sql`SELECT status FROM matches WHERE tournament_id = ${tournamentId} AND tournament_round = 1`,
+    )) as Array<{ status: string }>;
+    expect(m?.status).toBe('lobby');
   });
 });

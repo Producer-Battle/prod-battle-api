@@ -92,21 +92,26 @@ describe('weeklyTournamentScan', () => {
     expect(await countAutoTournaments()).toBe(1);
   });
 
-  it('inserts a row with auto_created=true, max_entrants=16, and a valid genre', async () => {
+  it('inserts a row with auto_created=true, bracket_enabled=false, max_entrants=32, showcase_seconds=604800, and a valid genre', async () => {
     await withFreshScan(() => weeklyTournamentScan());
 
     const rows = (await db().execute<{
       auto_created: boolean;
+      bracket_enabled: boolean;
       max_entrants: number;
+      showcase_seconds: number;
       submit_seconds_override: number;
       starts_at: string;
       genre_id: string;
     }>(
-      sql`SELECT auto_created, max_entrants, submit_seconds_override, starts_at, genre_id
+      sql`SELECT auto_created, bracket_enabled, max_entrants, showcase_seconds,
+                 submit_seconds_override, starts_at, genre_id
             FROM tournaments WHERE auto_created = true LIMIT 1`,
     )) as Array<{
       auto_created: boolean;
+      bracket_enabled: boolean;
       max_entrants: number;
+      showcase_seconds: number;
       submit_seconds_override: number;
       starts_at: string;
       genre_id: string;
@@ -114,7 +119,12 @@ describe('weeklyTournamentScan', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.auto_created).toBe(true);
-    expect(rows[0]?.max_entrants).toBe(16);
+    // Weekly tournaments are showcase-only (no bracket).
+    expect(rows[0]?.bracket_enabled).toBe(false);
+    // 32 entrant slots (not the old 16 cap).
+    expect(rows[0]?.max_entrants).toBe(32);
+    // 7-day showcase window.
+    expect(Number(rows[0]?.showcase_seconds)).toBe(604800);
     expect([600, 1800, 3600]).toContain(Number(rows[0]?.submit_seconds_override));
     expect(rows[0]?.genre_id).toBeTruthy();
     // starts_at must be a Sunday at 12:00 UTC.

@@ -239,6 +239,20 @@
       "when": 1777800000000,
       "tag": "0033_email_prefs",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1777901681954,
+      "tag": "0034_handle_check_constraint",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1778000000000,
+      "tag": "0035_tournament_bracket_enabled",
+      "breakpoints": true
     }
   ]
 }

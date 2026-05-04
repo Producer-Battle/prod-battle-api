@@ -850,6 +850,10 @@ export const tournaments = pgTable('tournaments', {
   submitSecondsOverride: integer(),
   // true for rows auto-created by the weekly cron. Drives idempotency guard.
   autoCreated: boolean().notNull().default(false),
+  // When false, the tournament runs open -> showcase -> finished (no bracket).
+  // The rank-1 showcase user is crowned winner directly. Default true preserves
+  // existing bracket behavior; weekly auto-created rows set this to false.
+  bracketEnabled: boolean().notNull().default(true),
   // Showcase phase: window between registration close and round 1.
   // showcaseSeconds defaults to 259200 (3 days) when null.
   showcaseSeconds: integer(),

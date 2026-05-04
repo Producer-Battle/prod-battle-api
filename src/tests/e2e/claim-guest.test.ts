@@ -196,7 +196,7 @@ describe('POST /me/claim-guest-handle', () => {
   it('409 when target email is not @guest.local', async () => {
     const caller = await seedTestUser('claim-caller-d', { plan: 'free', role: 'producer' });
     // A real-looking user who happens to have a non-guest email.
-    const realUser = await seedTestUser('real-user-handle-test', {
+    const realUser = await seedTestUser('real-user-handle', {
       plan: 'free',
       role: 'producer',
     });

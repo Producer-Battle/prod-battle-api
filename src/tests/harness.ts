@@ -230,8 +230,17 @@ export async function getMatch(app: OpenAPIHono, code: string): Promise<FetchedM
 
 // Produces a short, unique handle per call. Prefix isolates test files from
 // each other and from any residual data that slipped past truncation.
+//
+// The generated handle must match HANDLE_RE: [a-zA-Z0-9_-]{3,20}.
+// We truncate to 20 chars and strip any characters outside [a-zA-Z0-9_-].
 let counter = 0;
 export function uniqueHandle(prefix: string): string {
   counter++;
-  return `${prefix}-${Date.now().toString(36)}-${counter}`;
+  // Base36 timestamp (8 chars) + counter gives uniqueness within a test run.
+  const suffix = `${Date.now().toString(36)}${counter}`;
+  // Sanitize prefix: replace any character that is not [a-zA-Z0-9_-] with '-'.
+  const safePrefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const raw = `${safePrefix}-${suffix}`;
+  // Truncate to 20 chars (the HANDLE_RE max length).
+  return raw.slice(0, 20);
 }

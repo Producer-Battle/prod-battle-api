@@ -19,6 +19,70 @@ import * as schema from '../db/schema.js';
 import { env } from '../env.js';
 import { sendEmail } from '../mail/send.js';
 
+// Handle validation - must stay in sync with HANDLE_RE in src/routes/me.ts.
+// Exported so tests can import without pulling in the full auth config.
+export const HANDLE_RE = /^[a-zA-Z0-9_-]{3,20}$/;
+
+// Adjectives and nouns for randomHandle() - replicates the web client pattern.
+const ADJECTIVES = [
+  'phonky',
+  'silky',
+  'shadow',
+  'neon',
+  'velvet',
+  'dusty',
+  'crisp',
+  'sour',
+  'wavy',
+  'gritty',
+  'syrupy',
+  'ghost',
+  'pulse',
+  'tape',
+  'raw',
+  'glass',
+  'glitchy',
+  'lunar',
+  'echo',
+  'analog',
+  'sticky',
+  'chilled',
+  'wired',
+] as const;
+
+const NOUNS = [
+  'stoat',
+  'rabbit',
+  'kick',
+  'snare',
+  'loop',
+  '808',
+  'raven',
+  'lizard',
+  'fox',
+  'possum',
+  'moth',
+  'ferret',
+  'crane',
+  'finch',
+  'otter',
+  'ox',
+  'owl',
+  'hare',
+  'mantis',
+  'eel',
+  'gecko',
+  'heron',
+  'buzz',
+] as const;
+
+export function randomHandle(): string {
+  const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const n = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const suffix = Math.floor(Math.random() * 900 + 100); // 100-999
+  return `${a}-${n}-${suffix}`;
+}
+
 const googleConfigured = Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
 const discordConfigured = Boolean(env.DISCORD_OAUTH_CLIENT_ID && env.DISCORD_OAUTH_CLIENT_SECRET);
 
@@ -199,6 +263,59 @@ export const auth = betterAuth({
         defaultValue: 'active',
         input: false, // status is admin-managed; self-deactivate is future work
       },
+    },
+  },
+
+  databaseHooks: {
+    user: {
+      create: {
+        // Sanitize the handle (mapped from better-auth's `name`) before any
+        // user row is inserted. Covers ALL signup paths: email and OAuth.
+        //
+        // The email sign-up path is validated earlier via hooks.before (below)
+        // which rejects bad names before we even reach this point. For OAuth
+        // sign-ups (Google / Discord) the provider-supplied name often contains
+        // spaces, dots, @ characters, or long display names. We silently replace
+        // invalid names with a random handle so the user can sign in immediately
+        // and choose a real handle later in /settings.
+        before: async (user) => {
+          const rawName: string = (user as { name?: string }).name ?? '';
+
+          if (HANDLE_RE.test(rawName)) {
+            return { data: user };
+          }
+
+          // Invalid handle: replace with a random one.
+          const generated = randomHandle();
+          return { data: { ...user, name: generated } };
+        },
+      },
+    },
+  },
+
+  // hooks.before runs before every better-auth API request. We use it to
+  // validate the `name` (handle) field on the email sign-up endpoint and
+  // return a user-facing 400 when it's invalid. OAuth sign-ups don't pass
+  // through this path - their name is handled by databaseHooks above.
+  hooks: {
+    before: async (context) => {
+      // Only intercept the email sign-up endpoint.
+      // better-call pre-reads the body into context.body before calling hooks,
+      // so we read from context.body (not context.request, whose stream is spent).
+      const url = context.request?.url ?? '';
+      if (!url.includes('/sign-up/email')) return;
+
+      const body = context.body as Record<string, unknown> | undefined;
+      const name = typeof body?.name === 'string' ? body.name : '';
+      if (name && !HANDLE_RE.test(name)) {
+        return new Response(
+          JSON.stringify({
+            error: 'invalid_handle',
+            message: 'Handle must be 3-20 characters: letters, numbers, _ or -. No @ or spaces.',
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }
     },
   },
 

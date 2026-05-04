@@ -131,7 +131,9 @@ describe('auth flow (integration)', () => {
 
     const email = `auth-flow-${Date.now()}@test.local`;
     const password = 'integrationtest12345';
-    const name = `auth-flow-${Date.now()}`;
+    // Handle must match HANDLE_RE: 3-20 chars [a-zA-Z0-9_-].
+    // Use a short base36 timestamp suffix to keep it under 20 chars.
+    const name = `af${Date.now().toString(36)}`;
 
     // 1. Sign up.
     const signupRes = await app.request('/auth/sign-up/email', {
@@ -203,7 +205,7 @@ describe('auth flow (integration)', () => {
 
     const email = `auth-flow-unverified-${Date.now()}@test.local`;
     const password = 'integrationtest12345';
-    const name = `auth-unverified-${Date.now()}`;
+    const name = `au${Date.now().toString(36)}`;
 
     await app.request('/auth/sign-up/email', {
       method: 'POST',
