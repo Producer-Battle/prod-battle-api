@@ -24,6 +24,17 @@ vi.mock('../../mail/send.js', async (importOriginal) => {
   };
 });
 
+// Pubsub is also mocked: the rollover publishes phase_change events to Redis
+// via realtime/pubsub.ts. The CI environment has no Redis container (only
+// Postgres), so without this mock publish() hangs trying to connect and
+// times out the suite. The integration value preserved here is real DB +
+// real wall-clock - Redis pub/sub is fire-and-forget side effect.
+vi.mock('../../realtime/pubsub.js', () => ({
+  publish: vi.fn().mockResolvedValue(undefined),
+  subscribe: vi.fn().mockReturnValue(() => {}),
+  closePubSub: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { sendEmail } from '../../mail/send.js';
 const sendEmailMock = sendEmail as ReturnType<typeof vi.fn>;
 
