@@ -802,7 +802,7 @@ async function tournamentScheduleScan(): Promise<void> {
   }
 }
 
-async function openRound1(tournamentId: string): Promise<void> {
+export async function openRound1(tournamentId: string): Promise<void> {
   const d = db();
   const [t] = (await d.execute<{
     id: string;
@@ -882,7 +882,7 @@ async function openRound1(tournamentId: string): Promise<void> {
   console.log(`[tournament-sched] ${tournamentId} opened round 1 with ${size / 2} matches`);
 }
 
-async function advanceRound(tournamentId: string): Promise<void> {
+export async function advanceRound(tournamentId: string): Promise<void> {
   const d = db();
   // Highest round so far for this tournament.
   const lastRoundRow = await d.execute<{ r: number; n: string }>(
