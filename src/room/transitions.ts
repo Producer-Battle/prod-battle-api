@@ -2,7 +2,7 @@
 // match advances (submit->vote->results). Also callable directly
 // from submission / vote routes when all players finish early.
 
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { battlePhases, matches, submissions, votes } from '../db/schema.js';
 import { publish } from '../realtime/pubsub.js';
@@ -253,6 +253,3 @@ export async function maybeAdvanceAfterVote(matchId: string): Promise<void> {
     await advancePhase(matchId, 'vote', 'results', 0);
   }
 }
-
-// Keep drizzle helpers available for future per-phase side effects.
-export const _unused = { and, asc };

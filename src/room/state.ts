@@ -17,14 +17,6 @@
 
 export type Phase = 'lobby' | 'submit' | 'upload' | 'vote' | 'results';
 
-export type PhaseDurations = {
-  submitSeconds: number;
-  // revealSeconds is no longer used in timing calculations.
-  // The field still exists in GenreFormatConfig for historical data
-  // compatibility but has no effect on match flow.
-  voteSeconds: number;
-};
-
 // 2 minutes hard upload window after the produce phase. Hardcoded across
 // every game mode per the alpha UX spec - if it ever needs to vary by mode
 // or genre, lift to game_rules.
