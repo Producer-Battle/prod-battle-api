@@ -2,7 +2,7 @@
 // These are pure-JS and require no DB connection.
 
 import { describe, expect, it } from 'vitest';
-import { isWeeklyTournamentWindow, isoWeekNumber, nextSundayNoon } from './tick.js';
+import { isoWeekNumber, nextSundayNoon } from './tick.js';
 
 describe('nextSundayNoon', () => {
   it('from Monday returns the Sunday of the same week', () => {
@@ -47,34 +47,5 @@ describe('isoWeekNumber', () => {
 
   it('2026-12-28 is ISO week 53', () => {
     expect(isoWeekNumber(new Date('2026-12-28T00:00:00Z'))).toBe(53);
-  });
-});
-
-describe('isWeeklyTournamentWindow', () => {
-  it('returns true on Monday 09:00 UTC', () => {
-    // 2026-04-27 09:00 UTC is a Monday.
-    expect(isWeeklyTournamentWindow(new Date('2026-04-27T09:00:00Z'))).toBe(true);
-  });
-
-  it('returns true on Monday 09:29 UTC', () => {
-    expect(isWeeklyTournamentWindow(new Date('2026-04-27T09:29:00Z'))).toBe(true);
-  });
-
-  it('returns false on Monday 09:30 UTC (outside window)', () => {
-    expect(isWeeklyTournamentWindow(new Date('2026-04-27T09:30:00Z'))).toBe(false);
-  });
-
-  it('returns false on Monday 08:59 UTC (before window)', () => {
-    expect(isWeeklyTournamentWindow(new Date('2026-04-27T08:59:00Z'))).toBe(false);
-  });
-
-  it('returns false on Tuesday 09:05 UTC', () => {
-    // 2026-04-28 is a Tuesday.
-    expect(isWeeklyTournamentWindow(new Date('2026-04-28T09:05:00Z'))).toBe(false);
-  });
-
-  it('returns false on Sunday 09:05 UTC', () => {
-    // 2026-05-03 is a Sunday.
-    expect(isWeeklyTournamentWindow(new Date('2026-05-03T09:05:00Z'))).toBe(false);
   });
 });

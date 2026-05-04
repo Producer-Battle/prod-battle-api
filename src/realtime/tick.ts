@@ -1047,10 +1047,11 @@ async function genrePromotionScan(): Promise<void> {
 }
 
 // ── Weekly tournament auto-creation ──────────────────────────────────────
-// Trigger window: Monday 09:00-09:30 UTC.
-// Creates one tournament per week with starts_at = upcoming Sunday 12:00 UTC.
-// Idempotency: skips if an auto_created tournament already exists whose
-// starts_at falls in the same ISO week as the upcoming Sunday slot.
+// Self-healing: runs on every tick (throttled to 30s). Creates a tournament
+// for the upcoming Sunday 12:00 UTC if one doesn't exist for that week's
+// auto_created slot. No day/hour gate - any tick can fix a missed week
+// (deploy, restart, leader handoff, etc. used to silently skip the entire
+// week with the old Monday-09:00-30min window).
 
 let lastWeeklyTournamentScanAt = 0;
 
@@ -1083,21 +1084,14 @@ export function isoWeekNumber(d: Date): number {
   return Math.ceil(((thursday.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
 }
 
-export function isWeeklyTournamentWindow(now: Date): boolean {
-  // Must be Monday (UTC day 1), hour 09, minute 0-29.
-  return now.getUTCDay() === 1 && now.getUTCHours() === 9 && now.getUTCMinutes() < 30;
-}
-
 const WEEKLY_SUBMIT_OVERRIDES = [600, 1800, 3600] as const;
 
-async function weeklyTournamentScan(): Promise<void> {
+export async function weeklyTournamentScan(): Promise<void> {
   const now = Date.now();
   if (now - lastWeeklyTournamentScanAt < 30_000) return;
   lastWeeklyTournamentScanAt = now;
 
   const nowDate = new Date(now);
-  if (!isWeeklyTournamentWindow(nowDate)) return;
-
   const d = db();
 
   // Compute the target Sunday 12:00 UTC slot for this week.
