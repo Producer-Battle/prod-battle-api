@@ -510,6 +510,9 @@ matchesRoutes.openapi(createRouteDef, async (c) => {
           sampleMode,
           flipSourceId: flipSource?.id ?? null,
           isPublic,
+          // Track who created the room. Today only used for "host can start a
+          // private room when everyone's ready" - other modes ignore it.
+          hostId: c.var.user?.id ?? null,
         })
         .returning();
       created = row;

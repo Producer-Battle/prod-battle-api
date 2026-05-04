@@ -7,6 +7,7 @@ import {
   getResults,
   getReveal,
   joinRoom,
+  markReady,
   postJson,
   startRoom,
   submitTrack,
@@ -27,7 +28,7 @@ describe('mode: private', () => {
     await seedTestFixtures();
   });
 
-  it('runs a 1v1 with host-picked submit preset and no min-player gate', async () => {
+  it('runs a 1v1 with host-picked submit preset; host starts when both are ready', async () => {
     const preset = PRIVATE_SUBMIT_SECONDS_PRESETS[0]; // 300s - the shortest allowed
     const match = await createMatch(app, {
       mode: 'private',
@@ -45,7 +46,11 @@ describe('mode: private', () => {
     await joinRoom(app, match.roomCode, a);
     await joinRoom(app, match.roomCode, b);
 
-    // No min-player gate for private - 2 seated is enough.
+    // Private mode: every seated player must be ready before the host can
+    // start. Min 2 seated. teamCount is just the max capacity (8 in the
+    // real UI); the host decides when 2-8 producers have all approved.
+    await markReady(app, match.roomCode, a);
+    await markReady(app, match.roomCode, b);
     await startRoom(app, match.roomCode, a);
 
     const subA = await submitTrack(app, match.roomCode, a);

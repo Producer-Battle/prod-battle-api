@@ -133,6 +133,24 @@ export async function startRoom(app: OpenAPIHono, code: string, handle: string):
   }
 }
 
+/** Toggle the ready flag for a seated player. Used by private-room tests
+ * because /start now requires every seated player to be ready. */
+export async function markReady(
+  app: OpenAPIHono,
+  code: string,
+  handle: string,
+): Promise<{ ready: boolean }> {
+  const { status, json } = await postJson<{ ok: true; ready: boolean }>(
+    app,
+    `/rooms/${code}/ready`,
+    { user: handle },
+  );
+  if (status !== 200) {
+    throw new Error(`ready(${handle}) failed: ${status} ${JSON.stringify(json)}`);
+  }
+  return { ready: json.ready };
+}
+
 export async function submitTrack(
   app: OpenAPIHono,
   code: string,

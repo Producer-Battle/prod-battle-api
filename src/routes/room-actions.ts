@@ -236,6 +236,50 @@ roomActionsRoutes.post('/rooms/:code/start', async (c) => {
     }
   }
 
+  // Private rooms: only the host can start, min 2 seated, all seated must be
+  // ready. teamCount on private is fixed at 8 (max capacity); the host
+  // decides when to start, so any number from 2-8 is fine as long as
+  // everyone present has clicked Ready.
+  if (match.mode === 'private') {
+    if (match.hostId && match.hostId !== userId) {
+      return c.json(
+        { error: 'host_only', message: 'Only the room host can start the match.' },
+        403,
+      );
+    }
+    const rows = await d.execute<{ seated: number; ready: number }>(
+      sql`SELECT COUNT(*)::int AS seated,
+                 COUNT(*) FILTER (WHERE ready = true)::int AS ready
+            FROM match_players
+           WHERE match_id = ${match.id} AND is_spectator = false`,
+    );
+    const counts = rows[0] as { seated: number; ready: number } | undefined;
+    const seated = counts?.seated ?? 0;
+    const ready = counts?.ready ?? 0;
+    if (seated < 2) {
+      return c.json(
+        {
+          error: 'waiting_for_players',
+          message: `Need at least 2 producers seated. ${seated} so far.`,
+          seated,
+          minPlayers: 2,
+        },
+        400,
+      );
+    }
+    if (ready < seated) {
+      return c.json(
+        {
+          error: 'not_all_ready',
+          message: `Waiting on ${seated - ready} producer(s) to mark ready.`,
+          seated,
+          ready,
+        },
+        400,
+      );
+    }
+  }
+
   const submitSeconds =
     match.submitSeconds ??
     SUBMIT_SECONDS_DEFAULT[match.mode as keyof typeof SUBMIT_SECONDS_DEFAULT] ??
