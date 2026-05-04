@@ -16,9 +16,17 @@
 
 import { and, eq, gte, isNotNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { matchPlayers, matches, submissions, users } from '../db/schema.js';
+import {
+  matchPlayers,
+  matches,
+  submissions,
+  tournamentEntries,
+  tournamentShowcaseSubmissions,
+  tournamentShowcaseVotes,
+  users,
+} from '../db/schema.js';
 import { getCategory } from '../game-rules/loader.js';
-import type { ModeKey } from '../game-rules/types.js';
+import type { ModeKey, ShowcaseHonorRules } from '../game-rules/types.js';
 
 // Modes the API supports - mirror /matches.ts MODES.
 const ABANDONABLE_MODES: ReadonlySet<string> = new Set([
@@ -268,3 +276,158 @@ export async function markPlayerAbandoned(
 
 // Submissions table re-export to keep the imports honest.
 export { submissions };
+
+// Default showcase honor values - used when game_rules.honor.showcase is absent.
+const SHOWCASE_HONOR_DEFAULTS: ShowcaseHonorRules = {
+  voter_complete: 1,
+  crowd_favorite: 5,
+  runner_up: 2,
+  no_show: -1,
+  no_show_first_offence_factor: 0.5,
+};
+
+/**
+ * Apply showcase phase honor outcomes after finalization.
+ *
+ * Called by finalizeShowcase in realtime/tick.ts once scores and ranks have
+ * been written to tournament_showcase_submissions.
+ *
+ * - rank-1 entrant: +crowd_favorite honor
+ * - rank-2 entrant: +runner_up honor
+ * - voters who cast >= floor(N/2) valid non-self votes: +voter_complete honor
+ * - entrants who registered but never uploaded: no_show penalty (first-offence
+ *   factor applied via the same forgiveness ladder as match outcomes)
+ */
+export async function applyShowcaseOutcome(tournamentId: string): Promise<void> {
+  const d = db();
+  const honorRules = await getCategory('honor');
+  const showcaseRules: ShowcaseHonorRules = {
+    ...SHOWCASE_HONOR_DEFAULTS,
+    ...(honorRules.showcase ?? {}),
+  };
+
+  // Total submissions for the voter threshold calculation.
+  const [countRow] = (await d.execute<{ n: string }>(
+    sql`SELECT COUNT(*)::text AS n FROM tournament_showcase_submissions
+         WHERE tournament_id = ${tournamentId}`,
+  )) as Array<{ n: string }>;
+  const totalSubmissions = Number(countRow?.n ?? 0);
+  const voterThreshold = Math.floor(totalSubmissions / 2);
+
+  // ── Rank-1 and rank-2 honor ─────────────────────────────────────────────
+  const rankedSubs = (await d.execute<{ user_id: string; final_rank: number }>(
+    sql`SELECT user_id, final_rank
+          FROM tournament_showcase_submissions
+         WHERE tournament_id = ${tournamentId}
+           AND final_rank IN (1, 2)
+         ORDER BY final_rank ASC`,
+  )) as Array<{ user_id: string; final_rank: number }>;
+
+  for (const row of rankedSubs) {
+    const delta = row.final_rank === 1 ? showcaseRules.crowd_favorite : showcaseRules.runner_up;
+    await d
+      .update(users)
+      .set({ honor: sql`LEAST(${users.honor} + ${delta}, ${honorRules.max})` })
+      .where(eq(users.id, row.user_id));
+    console.log(
+      `[showcase-honor] ${tournamentId}: user ${row.user_id} rank ${row.final_rank} +${delta} honor`,
+    );
+  }
+
+  // ── Voter honor (participated enough) ──────────────────────────────────
+  if (voterThreshold > 0) {
+    // Find voters who cast at least floor(N/2) non-self, weight-counted votes.
+    // We count distinct submission_ids per voter across this tournament.
+    const activeVoters = (await d.execute<{ voter_id: string; n: string }>(
+      sql`SELECT tsv.voter_id, COUNT(DISTINCT tsv.submission_id)::text AS n
+            FROM tournament_showcase_votes tsv
+            JOIN tournament_showcase_submissions tss ON tss.id = tsv.submission_id
+           WHERE tss.tournament_id = ${tournamentId}
+           GROUP BY tsv.voter_id
+          HAVING COUNT(DISTINCT tsv.submission_id) >= ${voterThreshold}`,
+    )) as Array<{ voter_id: string; n: string }>;
+
+    for (const voter of activeVoters) {
+      await d
+        .update(users)
+        .set({
+          honor: sql`LEAST(${users.honor} + ${showcaseRules.voter_complete}, ${honorRules.max})`,
+        })
+        .where(eq(users.id, voter.voter_id));
+    }
+    if (activeVoters.length > 0) {
+      console.log(
+        `[showcase-honor] ${tournamentId}: ${activeVoters.length} active voters +${showcaseRules.voter_complete} honor each`,
+      );
+    }
+  }
+
+  // ── No-show penalty (registered but no showcase submission) ────────────
+  const noShows = (await d.execute<{ user_id: string }>(
+    sql`SELECT te.user_id
+          FROM tournament_entries te
+         WHERE te.tournament_id = ${tournamentId}
+           AND NOT EXISTS (
+             SELECT 1 FROM tournament_showcase_submissions tss
+              WHERE tss.tournament_id = ${tournamentId}
+                AND tss.user_id = te.user_id
+           )`,
+  )) as Array<{ user_id: string }>;
+
+  for (const noShow of noShows) {
+    const rawPenalty = showcaseRules.no_show;
+    // Apply first-offence forgiveness using the existing window rules.
+    // We check match_players for prior penalties (same pool as normal outcomes).
+    const penalty = await applyShowcaseFirstOffenceForgiveness(
+      noShow.user_id,
+      rawPenalty,
+      showcaseRules.no_show_first_offence_factor,
+      honorRules.firstOffenceWindowDays,
+    );
+    await d
+      .update(users)
+      .set({ honor: sql`GREATEST(${users.honor} + ${penalty}, 0)` })
+      .where(eq(users.id, noShow.user_id));
+    console.log(
+      `[showcase-honor] ${tournamentId}: no-show user ${noShow.user_id} ${penalty} honor`,
+    );
+  }
+}
+
+/**
+ * First-offence forgiveness for showcase no-shows. Uses the window days from
+ * honor rules but applies the showcase-specific factor instead of the generic
+ * firstOffenceMultiplier.
+ */
+async function applyShowcaseFirstOffenceForgiveness(
+  userId: string,
+  rawPenalty: number,
+  factor: number,
+  windowDays: number,
+): Promise<number> {
+  if (rawPenalty >= 0) return rawPenalty;
+  const d = db();
+  const cutoff = new Date(Date.now() - windowDays * 86400 * 1000);
+  // Check if the user has had any honor penalty in the window (via match outcomes).
+  const recent = await d
+    .select({ userId: matchPlayers.userId })
+    .from(matchPlayers)
+    .where(
+      and(
+        eq(matchPlayers.userId, userId),
+        ne(matchPlayers.honorDelta, 0),
+        isNotNull(matchPlayers.completedAt),
+        gte(matchPlayers.completedAt, cutoff),
+      ),
+    )
+    .limit(1);
+  if (recent.length === 0) {
+    return Math.round(rawPenalty * factor);
+  }
+  return rawPenalty;
+}
+
+// Keep imported table references alive for the compiler.
+void tournamentEntries;
+void tournamentShowcaseSubmissions;
+void tournamentShowcaseVotes;

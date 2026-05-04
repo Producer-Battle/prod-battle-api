@@ -749,41 +749,80 @@ async function voteRingScan(): Promise<void> {
   }
 }
 
-// Tournament scheduling. Two responsibilities, both fire from the same
-// scan:
+// Tournament scheduling. Three responsibilities, all fire from the same scan:
 //   1. Registration locks: tournaments with status='open' whose
-//      registration_closes_at has passed get flipped to 'starting' and
-//      have their effective_size set to the next-power-of-two <= entries.
-//      Round-1 matches are then created from the entrant list shuffled
-//      seed order (winners advance via the round-up logic below).
-//   2. Round advancement: in-progress tournaments check whether all
-//      matches in the current round have status='results'. If so, take
-//      the winners and pair them into the next round. When a round has
-//      a single match and it ends, set the tournament status='finished'
-//      and write winnerId.
+//      registration_closes_at has passed. If >= 2 entrants, transition to
+//      'showcase' and open the community listening + scoring window.
+//      If < 2 entrants, cancel immediately (same as before).
+//   2. Showcase close: tournaments at status='showcase' whose showcase_ends_at
+//      has passed - finalize scores + awards, then open round 1.
+//   3. Round advancement: in-progress tournaments check whether all matches in
+//      the current round have status='results'. If so, pair winners into the
+//      next round (or mark finished).
 let lastTournamentScheduleScanAt = 0;
 
-async function tournamentScheduleScan(): Promise<void> {
+const DEFAULT_SHOWCASE_SECONDS = 259200; // 3 days
+
+export async function tournamentScheduleScan(): Promise<void> {
   const now = Date.now();
   if (now - lastTournamentScheduleScanAt < 30_000) return; // every 30s
   lastTournamentScheduleScanAt = now;
 
   const d = db();
 
-  // ── Lock registration on tournaments whose window has closed ─────────
-  const opening = await d.execute<{ id: string }>(
+  // ── 1. Transition open -> showcase when registration closes ──────────
+  const closedOpen = await d.execute<{ id: string }>(
     sql`SELECT id FROM tournaments
          WHERE status = 'open'
            AND registration_closes_at < now()
          LIMIT 10`,
   );
-  for (const row of opening as Array<{ id: string }>) {
+  for (const row of closedOpen as Array<{ id: string }>) {
+    // Check entrant count first - cancel immediately if < 2.
+    const [entrantCount] = (await d.execute<{ n: string }>(
+      sql`SELECT COUNT(*)::text AS n FROM tournament_entries WHERE tournament_id = ${row.id}`,
+    )) as Array<{ n: string }>;
+    if (Number(entrantCount?.n ?? 0) < 2) {
+      await d.execute(sql`UPDATE tournaments SET status = 'cancelled' WHERE id = ${row.id}`);
+      console.log(`[tournament-sched] ${row.id} cancelled - too few entrants`);
+      continue;
+    }
+
+    // Enough entrants - transition to showcase.
+    const [tRow] = (await d.execute<{ showcase_seconds: number | null }>(
+      sql`SELECT showcase_seconds FROM tournaments WHERE id = ${row.id}`,
+    )) as Array<{ showcase_seconds: number | null }>;
+    const showcaseSeconds = tRow?.showcase_seconds ?? DEFAULT_SHOWCASE_SECONDS;
+    const endsAt = new Date(Date.now() + showcaseSeconds * 1000);
+    await d.execute(
+      sql`UPDATE tournaments
+             SET status = 'showcase',
+                 showcase_starts_at = now(),
+                 showcase_ends_at = ${endsAt.toISOString()}::timestamptz
+           WHERE id = ${row.id}`,
+    );
+    console.log(
+      `[tournament-sched] ${row.id} transitioned to showcase, ends ${endsAt.toISOString()}`,
+    );
+  }
+
+  // ── 2. Close showcase when window expires, then open round 1 ─────────
+  const closedShowcase = await d.execute<{ id: string }>(
+    sql`SELECT id FROM tournaments
+         WHERE status = 'showcase'
+           AND showcase_ends_at < now()
+         LIMIT 10`,
+  );
+  for (const row of closedShowcase as Array<{ id: string }>) {
+    await finalizeShowcase(row.id).catch((err: Error) =>
+      console.error('[tournament-sched] finalizeShowcase failed:', err.message),
+    );
     await openRound1(row.id).catch((err: Error) =>
       console.error('[tournament-sched] openRound1 failed:', err.message),
     );
   }
 
-  // ── Advance in-progress tournaments to next round (or finish) ──────
+  // ── 3. Advance in-progress tournaments to next round (or finish) ──────
   const advancing = await d.execute<{ id: string }>(
     sql`SELECT t.id FROM tournaments t
          WHERE t.status IN ('starting', 'in_progress')
@@ -800,6 +839,65 @@ async function tournamentScheduleScan(): Promise<void> {
       console.error('[tournament-sched] advanceRound failed:', err.message),
     );
   }
+}
+
+/**
+ * Finalize the showcase phase for a tournament:
+ *   1. Compute submission scores (SUM of vote weights).
+ *   2. Rank submissions by score DESC, created_at ASC (tie-break by earlier upload).
+ *   3. Write final_rank to each submission row.
+ *   4. Award crowd_favorite_<tournamentId> achievement to rank-1 user.
+ *   5. Apply showcase honor outcomes.
+ *
+ * Exported so it can be called directly in tests.
+ */
+export async function finalizeShowcase(tournamentId: string): Promise<void> {
+  const d = db();
+
+  // Score = SUM(weight) per submission.
+  await d.execute(
+    sql`UPDATE tournament_showcase_submissions tss
+           SET score = COALESCE(
+             (SELECT SUM(tsv.weight)
+                FROM tournament_showcase_votes tsv
+               WHERE tsv.submission_id = tss.id),
+             0
+           )
+         WHERE tss.tournament_id = ${tournamentId}`,
+  );
+
+  // Rank by score DESC, created_at ASC (earlier upload wins ties).
+  const ranked = (await d.execute<{ id: string; user_id: string; rk: number }>(
+    sql`SELECT id, user_id, RANK() OVER (ORDER BY score DESC, created_at ASC)::int AS rk
+          FROM tournament_showcase_submissions
+         WHERE tournament_id = ${tournamentId}`,
+  )) as Array<{ id: string; user_id: string; rk: number }>;
+
+  for (const sub of ranked) {
+    await d.execute(
+      sql`UPDATE tournament_showcase_submissions SET final_rank = ${sub.rk} WHERE id = ${sub.id}`,
+    );
+  }
+
+  // Award crowd_favorite achievement to rank-1 user.
+  const rank1 = ranked.find((r) => r.rk === 1);
+  if (rank1) {
+    const achievementKey = `crowd_favorite_${tournamentId}`;
+    await d.execute(
+      sql`INSERT INTO achievements (user_id, achievement_key)
+            VALUES (${rank1.user_id}, ${achievementKey})
+          ON CONFLICT DO NOTHING`,
+    );
+    console.log(`[showcase] ${tournamentId}: crowd_favorite awarded to ${rank1.user_id}`);
+  }
+
+  // Apply showcase honor outcomes (lazy import to avoid circular deps).
+  const { applyShowcaseOutcome } = await import('../honor/outcomes.js');
+  await applyShowcaseOutcome(tournamentId).catch((err: Error) =>
+    console.error('[tournament-sched] applyShowcaseOutcome failed:', err.message),
+  );
+
+  console.log(`[showcase] ${tournamentId}: finalized (${ranked.length} submissions ranked)`);
 }
 
 export async function openRound1(tournamentId: string): Promise<void> {

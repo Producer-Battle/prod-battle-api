@@ -14,6 +14,19 @@ export type HonorPenaltyKey =
   | 'dmca_third'
   | 'vote_ring_confirmed';
 
+export interface ShowcaseHonorRules {
+  /** Honor awarded to voters who cast at least floor(N/2) valid non-self votes. */
+  voter_complete: number;
+  /** Honor awarded to the rank-1 showcase entrant. */
+  crowd_favorite: number;
+  /** Honor awarded to the rank-2 showcase entrant. */
+  runner_up: number;
+  /** Honor delta applied to entrants who registered but never uploaded. */
+  no_show: number;
+  /** Multiplier applied to no_show on first offence (mirrors existing forgiveness ladder). */
+  no_show_first_offence_factor: number;
+}
+
 export interface HonorRules {
   start: number;
   max: number;
@@ -35,6 +48,8 @@ export interface HonorRules {
     extraQuickplaySlotAt: number;
     extraQuickplaySlotAfterDays: number;
   };
+  /** Configurable honor outcomes for the showcase phase. Optional - falls back to hardcoded defaults. */
+  showcase?: ShowcaseHonorRules;
 }
 
 export interface TierRules {

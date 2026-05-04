@@ -93,6 +93,13 @@ async function seedRulesAndSeasons(): Promise<void> {
           extraQuickplaySlotAt: 95,
           extraQuickplaySlotAfterDays: 30,
         },
+        showcase: {
+          voter_complete: 1,
+          crowd_favorite: 5,
+          runner_up: 2,
+          no_show: -1,
+          no_show_first_offence_factor: 0.5,
+        },
       },
     },
     {
@@ -335,6 +342,10 @@ export async function resetMatchState(): Promise<void> {
     await tx.execute(sql`SET LOCAL client_min_messages = WARNING`);
     await tx.execute(
       sql`TRUNCATE TABLE
+            tournament_showcase_votes,
+            tournament_showcase_submissions,
+            tournament_entries,
+            tournaments,
             votes,
             submission_likes,
             submission_tags,

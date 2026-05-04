@@ -827,6 +827,11 @@ export const tournaments = pgTable('tournaments', {
   submitSecondsOverride: integer(),
   // true for rows auto-created by the weekly cron. Drives idempotency guard.
   autoCreated: boolean().notNull().default(false),
+  // Showcase phase: window between registration close and round 1.
+  // showcaseSeconds defaults to 259200 (3 days) when null.
+  showcaseSeconds: integer(),
+  showcaseStartsAt: timestamp({ withTimezone: true }),
+  showcaseEndsAt: timestamp({ withTimezone: true }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -843,6 +848,62 @@ export const tournamentEntries = pgTable(
     eliminatedAtRound: integer(),
   },
   (t) => [primaryKey({ columns: [t.tournamentId, t.userId] })],
+);
+
+/*
+ * Tournament showcase phase - community listening + scoring window that runs
+ * between registration closing and round 1. Each entrant uploads one track;
+ * any active signed-in user can score it 1-5.
+ *
+ * Scores are visible live during the window. Top-scored entrant at close
+ * receives the "crowd_favorite_<tournamentId>" achievement + honor bonus.
+ * The bracket then runs as normal - independent of showcase rank.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
+export const tournamentShowcaseSubmissions = pgTable(
+  'tournament_showcase_submissions',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    tournamentId: uuid()
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    audioUrl: text().notNull(),
+    title: text(),
+    durationSec: integer(),
+    score: numeric({ precision: 10, scale: 3 }).notNull().default('0'),
+    finalRank: integer(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('tournament_showcase_submissions_tournament_user_unique').on(
+      t.tournamentId,
+      t.userId,
+    ),
+    index('tournament_showcase_submissions_tournament_idx').on(t.tournamentId),
+  ],
+);
+
+export const tournamentShowcaseVotes = pgTable(
+  'tournament_showcase_votes',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    submissionId: uuid()
+      .notNull()
+      .references(() => tournamentShowcaseSubmissions.id, { onDelete: 'cascade' }),
+    voterId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    weight: numeric({ precision: 10, scale: 3 }).notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('tournament_showcase_votes_submission_voter_unique').on(t.submissionId, t.voterId),
+    index('tournament_showcase_votes_submission_idx').on(t.submissionId),
+  ],
 );
 
 /*
