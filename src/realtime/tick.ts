@@ -200,6 +200,34 @@ export async function dailyRolloverCheck(): Promise<void> {
     room_code: string;
     primary_genre_id: string;
   }>) {
+    // No-submissions guard: if zero producers uploaded during the submit
+    // window, cancel the match instead of flipping to 'vote'. Otherwise
+    // we'd parade an empty room for 24h asking the audience to score
+    // nothing. Cancelled dailies still appear in history but the UI shows
+    // an empty-day card rather than a broken vote screen.
+    const [subCount] = (await d.execute<{ n: string }>(
+      sql`SELECT COUNT(*)::text AS n FROM submissions WHERE match_id = ${row.id}`,
+    )) as Array<{ n: string }>;
+    if (Number(subCount?.n ?? 0) === 0) {
+      await d
+        .update(matches)
+        .set({ status: 'cancelled', endedAt: new Date() })
+        .where(sql`${matches.id} = ${row.id}`);
+      await d.execute(
+        sql`UPDATE battle_phases
+               SET current_phase = 'results'::match_phase
+             WHERE match_id = ${row.id}`,
+      );
+      await publish(`battle:${row.id}`, {
+        type: 'phase_change',
+        matchId: row.id,
+        phase: 'results',
+        transitionsAt: null,
+      });
+      console.log(`[tick] daily ${row.id} (${row.room_code}): cancelled - no submissions`);
+      continue;
+    }
+
     // Flip status to 'vote' on both matches and battle_phases (if a row exists).
     await d.update(matches).set({ status: 'vote' }).where(sql`${matches.id} = ${row.id}`);
 

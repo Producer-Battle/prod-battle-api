@@ -128,6 +128,9 @@ describe('Daily Challenge two-day cycle', () => {
       status: 'submit',
       dailyDate: yesterday,
     });
+    // At least one submission - otherwise the rollover cancels the match
+    // instead of flipping it to vote (separate test below).
+    await insertSubmission({ matchId, genreId, handle: uniqueHandle('rc-sub-flip') });
 
     await dailyRolloverCheck();
 
@@ -135,6 +138,28 @@ describe('Daily Challenge two-day cycle', () => {
       sql`SELECT status FROM matches WHERE id = ${matchId}`,
     );
     expect((rows as Array<{ status: string }>)[0]?.status).toBe('vote');
+  });
+
+  it('dailyRolloverCheck: cancels submit-phase daily with zero submissions', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+
+    const { id: matchId } = await insertDailyMatch({
+      genreId,
+      status: 'submit',
+      dailyDate: yesterday,
+    });
+    // Intentionally NO submissions inserted.
+
+    await dailyRolloverCheck();
+
+    const rows = await d.execute<{ status: string; ended_at: string | null }>(
+      sql`SELECT status, ended_at FROM matches WHERE id = ${matchId}`,
+    );
+    const row = (rows as Array<{ status: string; ended_at: string | null }>)[0];
+    expect(row?.status).toBe('cancelled');
+    expect(row?.ended_at).not.toBeNull();
   });
 
   it('dailyRolloverCheck: does NOT flip a submit match that is still today', async () => {
