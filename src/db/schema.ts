@@ -141,6 +141,29 @@ export const users = pgTable(
       .$type<Partial<Record<'matchHistory' | 'stats' | 'packs' | 'achievements', boolean>>>()
       .notNull()
       .default({}),
+    // Per-category email opt-in preferences. All true by default.
+    // account_security and billing are always-on and cannot be set to false
+    // via the PATCH /me/email-prefs endpoint; the UI renders them as locked.
+    // Missing keys fall back to true in sendIfOptedIn so a schema gap never
+    // silently mutes mail.
+    emailPrefs: jsonb()
+      .$type<{
+        tournament_activity: boolean;
+        daily_activity: boolean;
+        match_results: boolean;
+        honor_alerts: boolean;
+        account_security: boolean;
+        billing: boolean;
+      }>()
+      .notNull()
+      .default({
+        tournament_activity: true,
+        daily_activity: true,
+        match_results: true,
+        honor_alerts: true,
+        account_security: true,
+        billing: true,
+      }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
@@ -961,6 +984,26 @@ export const gameRules = pgTable('game_rules', {
  * submission UUIDs; the API resolves them to full submission details when
  * serving the detail view.
  */
+/*
+ * Tournament reminders sent - idempotency ledger for the 24h-before-start
+ * email cron. Each (tournament_id, user_id) pair is inserted ON CONFLICT DO
+ * NOTHING so only the successful inserts trigger an email send. This prevents
+ * duplicate reminders even if the cron fires more than once in the same window.
+ */
+export const tournamentRemindersSent = pgTable(
+  'tournament_reminders_sent',
+  {
+    tournamentId: uuid()
+      .notNull()
+      .references(() => tournaments.id, { onDelete: 'cascade' }),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    sentAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.tournamentId, t.userId] })],
+);
+
 export const monthlyPlaylists = pgTable(
   'monthly_playlists',
   {

@@ -19,7 +19,8 @@ import { sql } from 'drizzle-orm';
 import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
-import { sendEmail } from '../mail/send.js';
+import { sendIfOptedIn } from '../mail/gated.js';
+import { notifyShowcaseOpen, notifyTournamentStartIn24h } from '../mail/touchpoints.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { UPLOAD_PHASE_SECONDS, nextPhase } from '../room/state.js';
 import {
@@ -291,12 +292,13 @@ export async function dailyRolloverCheck(): Promise<void> {
  * daily match. Called once per match at the submit->vote transition.
  * Individual send failures are logged and swallowed so one bad address
  * does not prevent the rest of the batch.
+ * Gated by the user's daily_activity email preference.
  */
 async function sendDailyVoteOpenEmails(matchId: string, roomCode: string): Promise<void> {
   const d = db();
 
-  const submitters = await d.execute<{ email: string; handle: string }>(
-    sql`SELECT u.email, u.handle
+  const submitters = await d.execute<{ user_id: string; email: string; handle: string }>(
+    sql`SELECT u.id AS user_id, u.email, u.handle
           FROM submissions s
           JOIN users u ON u.id = s.user_id
          WHERE s.match_id = ${matchId}
@@ -305,8 +307,8 @@ async function sendDailyVoteOpenEmails(matchId: string, roomCode: string): Promi
 
   const voteUrl = `https://prodbattle.com/room/${roomCode}`;
 
-  for (const row of submitters as Array<{ email: string; handle: string }>) {
-    await sendEmail({
+  for (const row of submitters as Array<{ user_id: string; email: string; handle: string }>) {
+    await sendIfOptedIn(row.user_id, 'daily_activity', {
       from: 'support@prodbattle.com',
       to: row.email,
       subject: 'Daily Challenge voting is now open',
@@ -934,6 +936,10 @@ export async function tournamentScheduleScan(): Promise<void> {
     console.log(
       `[tournament-sched] ${row.id} transitioned to showcase, ends ${endsAt.toISOString()}`,
     );
+    // Notify entrants that the showcase phase is open.
+    void notifyShowcaseOpen(row.id).catch((err: Error) =>
+      console.error(`[tournament-sched] notifyShowcaseOpen failed for ${row.id}: ${err.message}`),
+    );
   }
 
   // ── 2. Close showcase when window expires, then open round 1 ─────────
@@ -1154,6 +1160,31 @@ export async function advanceRound(tournamentId: string): Promise<void> {
         sql`INSERT INTO achievements (user_id, achievement_key) VALUES (${winnerId}, 'tournament_winner') ON CONFLICT DO NOTHING`,
       );
       console.log(`[tournament-sched] ${tournamentId} won by ${winnerId}`);
+
+      // Notify champion and runner-up (the other player in the final match).
+      const { notifyChampion, notifyRunnerUp } = await import('../mail/touchpoints.js');
+      void notifyChampion(tournamentId, winnerId).catch((err: Error) =>
+        console.error(`[tournament-sched] notifyChampion failed: ${err.message}`),
+      );
+
+      // Find runner-up: the non-winner player in the final round match.
+      const finalRound = currentRound;
+      const runnerUpRows = await d.execute<{ user_id: string }>(
+        sql`SELECT mp.user_id
+              FROM match_players mp
+              JOIN matches m ON m.id = mp.match_id
+             WHERE m.tournament_id = ${tournamentId}
+               AND m.tournament_round = ${finalRound}
+               AND mp.user_id != ${winnerId}
+               AND mp.is_spectator = false
+             LIMIT 1`,
+      );
+      const runnerUpId = (runnerUpRows as Array<{ user_id: string }>)[0]?.user_id;
+      if (runnerUpId) {
+        void notifyRunnerUp(tournamentId, runnerUpId).catch((err: Error) =>
+          console.error(`[tournament-sched] notifyRunnerUp failed: ${err.message}`),
+        );
+      }
     }
     return;
   }
@@ -1524,6 +1555,75 @@ async function startLobbyMatch(
   });
 }
 
+// 24h-before-tournament reminder scan. Throttled to once every 60 seconds
+// because these reminders are not time-critical to the second.
+let lastReminderScanAt = 0;
+
+/** Reset the reminder scan throttle. Exported for e2e tests only. */
+export function _resetReminderScanThrottleForTest(): void {
+  lastReminderScanAt = 0;
+}
+
+/**
+ * Find tournaments starting in the 23h-25h window and email each entrant
+ * who hasn't received a reminder yet. Idempotency via
+ * tournament_reminders_sent - only successful inserts generate an email.
+ *
+ * Exported for e2e tests.
+ */
+export async function tournamentStartReminderScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastReminderScanAt < 60_000) return;
+  lastReminderScanAt = now;
+
+  const d = db();
+  const windowStart = new Date(now + 23 * 3600 * 1000).toISOString();
+  const windowEnd = new Date(now + 25 * 3600 * 1000).toISOString();
+
+  // Tournaments that start in the 23h-25h window and are still accepting
+  // or running (not cancelled/finished).
+  const tournaments = await d.execute<{ id: string }>(
+    sql`SELECT id FROM tournaments
+         WHERE status IN ('open', 'showcase', 'starting', 'in_progress')
+           AND starts_at >= ${windowStart}::timestamptz
+           AND starts_at < ${windowEnd}::timestamptz
+         LIMIT 20`,
+  );
+
+  for (const t of tournaments as Array<{ id: string }>) {
+    // Get all entrants who have NOT already received a reminder for this
+    // tournament. The INSERT ON CONFLICT DO NOTHING ensures idempotency: only
+    // the rows that are actually inserted generate an email.
+    const entrants = await d.execute<{ user_id: string }>(
+      sql`SELECT te.user_id
+            FROM tournament_entries te
+           WHERE te.tournament_id = ${t.id}
+             AND NOT EXISTS (
+               SELECT 1 FROM tournament_reminders_sent trs
+                WHERE trs.tournament_id = ${t.id}
+                  AND trs.user_id = te.user_id
+             )`,
+    );
+
+    for (const e of entrants as Array<{ user_id: string }>) {
+      // Attempt to claim the send slot. Only proceed if the insert succeeds.
+      const inserted = await d.execute<{ tournament_id: string }>(
+        sql`INSERT INTO tournament_reminders_sent (tournament_id, user_id)
+              VALUES (${t.id}, ${e.user_id})
+            ON CONFLICT DO NOTHING
+            RETURNING tournament_id`,
+      );
+      if ((inserted as Array<{ tournament_id: string }>).length === 0) continue;
+
+      await notifyTournamentStartIn24h(t.id, e.user_id).catch((err: Error) =>
+        console.error(
+          `[reminder] notifyTournamentStartIn24h failed for ${t.id}/${e.user_id}: ${err.message}`,
+        ),
+      );
+    }
+  }
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -1556,6 +1656,9 @@ export function startTickLoop(): () => void {
       );
       genrePromotionScan().catch((err: Error) =>
         console.error('[genre-promote] error:', err.message),
+      );
+      tournamentStartReminderScan().catch((err: Error) =>
+        console.error('[reminder] error:', err.message),
       );
     }, 1000);
   });

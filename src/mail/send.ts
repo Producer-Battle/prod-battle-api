@@ -19,6 +19,10 @@
 // All errors are logged with a `[mail]` prefix so they're greppable in
 // container logs.
 //
+// Preference-gated sends: use sendIfOptedIn from ./gated.ts for optional mail
+// categories. Account-security and billing mail must call sendEmail directly -
+// those are always-on and must never be gated.
+//
 // Sources:
 //   - relay handler:    prod-battle-infra/modules/mail-server/relay/relay.js
 //   - relay deployment: prod-battle-infra/modules/mail-server/cloud-init.yaml.tpl
@@ -31,6 +35,15 @@ export interface SendEmailInput {
   from?: string;
   replyTo?: string;
 }
+
+// The mutable preference categories users can toggle.
+// account_security and billing are intentionally absent - those are
+// always-on and must be sent via sendEmail directly.
+export type EmailPrefKey =
+  | 'tournament_activity'
+  | 'daily_activity'
+  | 'match_results'
+  | 'honor_alerts';
 
 const DEFAULT_FROM = process.env.SMTP_FROM ?? 'noreply@prodbattle.com';
 

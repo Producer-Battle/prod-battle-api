@@ -12,8 +12,9 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, rankings, submissions } from '../db/schema.js';
 import { activeSeason } from '../game-rules/loader.js';
+import { notifyRankedLpChange } from '../mail/touchpoints.js';
 import { updateRating } from '../ranking/glicko2.js';
-import { tickCalibration } from './index.js';
+import { glickoToTier, tickCalibration } from './index.js';
 
 interface PlayerState {
   userId: string;
@@ -133,10 +134,22 @@ export async function applyRankedOutcome(matchId: string): Promise<void> {
           eq(rankings.seasonId, season.id),
         ),
       );
+    const lpDelta = Math.round(r.updated.rating - r.ratingBefore);
     await d
       .update(matchPlayers)
-      .set({ lpDelta: Math.round(r.updated.rating - r.ratingBefore) })
+      .set({ lpDelta })
       .where(and(eq(matchPlayers.matchId, matchId), eq(matchPlayers.userId, r.userId)));
     await tickCalibration(r.userId);
+
+    // Fire-and-forget LP change notification (ranked only, gated by match_results pref).
+    const tierInfo = await glickoToTier(newRating).catch(() => null);
+    if (tierInfo) {
+      void notifyRankedLpChange(matchId, r.userId, lpDelta, tierInfo.lp, tierInfo.label).catch(
+        (err: Error) =>
+          console.error(
+            `[ranked-outcome] notifyRankedLpChange failed for ${r.userId}: ${err.message}`,
+          ),
+      );
+    }
   }
 }

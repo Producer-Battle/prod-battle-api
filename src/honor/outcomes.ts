@@ -28,6 +28,39 @@ import {
 import { getCategory } from '../game-rules/loader.js';
 import type { ModeKey, ShowcaseHonorRules } from '../game-rules/types.js';
 
+// Honor threshold below which ranked/tournament/private access is locked.
+const HONOR_LOCK_THRESHOLD = 50;
+
+/**
+ * After applying an honor penalty, check if the user's honor crossed the
+ * ranked-lock threshold (from >= 50 to < 50) and fire a one-time warning
+ * email. Only called for penalty paths (negative delta) - regen paths cannot
+ * cross the threshold downward.
+ *
+ * Reads the current honor from the DB after the update so the comparison is
+ * accurate even if the penalty was clamped at 0 by GREATEST.
+ */
+async function maybeNotifyHonorDrop(userId: string, honorBefore: number): Promise<void> {
+  if (honorBefore < HONOR_LOCK_THRESHOLD) return; // was already locked - no new notification
+
+  const d = db();
+  const [row] = await d
+    .select({ honor: users.honor })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!row) return;
+
+  const honorAfter = row.honor;
+  if (honorAfter < HONOR_LOCK_THRESHOLD) {
+    // Threshold crossed - fire the notification fire-and-forget.
+    const { notifyHonorBelow50 } = await import('../mail/touchpoints.js');
+    void notifyHonorBelow50(userId, honorBefore, honorAfter).catch((err: Error) =>
+      console.error(`[honor] notifyHonorBelow50 failed for ${userId}: ${err.message}`),
+    );
+  }
+}
+
 // Modes the API supports - mirror /matches.ts MODES.
 const ABANDONABLE_MODES: ReadonlySet<string> = new Set([
   'quickplay',
@@ -89,6 +122,7 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
     has_submission: boolean;
     votes_cast: number;
     votable_count: number;
+    current_honor: number;
   };
   const players = (
     (await d.execute<PlayerRow>(
@@ -100,8 +134,10 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
                 COALESCE((SELECT COUNT(*)::int FROM votes v
                            WHERE v.match_id = ${matchId} AND v.voter_id = mp.user_id), 0) AS votes_cast,
                 (SELECT COUNT(*)::int FROM submissions s
-                  WHERE s.match_id = ${matchId} AND s.user_id != mp.user_id) AS votable_count
+                  WHERE s.match_id = ${matchId} AND s.user_id != mp.user_id) AS votable_count,
+                u.honor AS current_honor
            FROM match_players mp
+           JOIN users u ON u.id = mp.user_id
           WHERE mp.match_id = ${matchId} AND mp.is_spectator = false`,
     )) as PlayerRow[]
   ).map((r) => ({
@@ -111,6 +147,7 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
     hasSubmission: r.has_submission,
     votesCast: Number(r.votes_cast),
     votableCount: Number(r.votable_count),
+    currentHonor: Number(r.current_honor),
   }));
 
   for (const p of players) {
@@ -136,6 +173,7 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
         .update(users)
         .set({ honor: sql`GREATEST(${users.honor} + ${penalty}, 0)` })
         .where(eq(users.id, p.userId));
+      await maybeNotifyHonorDrop(p.userId, p.currentHonor);
       continue;
     }
 
@@ -208,6 +246,7 @@ export async function applyMatchOutcome(matchId: string): Promise<void> {
         .update(users)
         .set({ honor: sql`GREATEST(${users.honor} + ${penalty}, 0)` })
         .where(eq(users.id, p.userId));
+      await maybeNotifyHonorDrop(p.userId, p.currentHonor);
     }
   }
 }
@@ -258,6 +297,14 @@ export async function markPlayerAbandoned(
     .limit(1);
   if (!existing || existing.honorDelta !== 0 || existing.abandoned) return;
 
+  // Read current honor before the penalty so we can detect the lock threshold crossing.
+  const [userRow] = await d
+    .select({ honor: users.honor })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const honorBefore = userRow?.honor ?? 0;
+
   const modeKey = modeKeyFor(matchMode);
   const honorRules = await getCategory('honor');
   const penaltyKey = `${modeKey}_mid` as const;
@@ -272,6 +319,7 @@ export async function markPlayerAbandoned(
     .update(users)
     .set({ honor: sql`GREATEST(${users.honor} + ${penalty}, 0)` })
     .where(eq(users.id, userId));
+  await maybeNotifyHonorDrop(userId, honorBefore);
 }
 
 // Submissions table re-export to keep the imports honest.

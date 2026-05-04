@@ -232,6 +232,13 @@
       "when": 1777753000000,
       "tag": "0032_tournament_showcase",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1777800000000,
+      "tag": "0033_email_prefs",
+      "breakpoints": true
     }
   ]
 }

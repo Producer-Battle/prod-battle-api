@@ -26,9 +26,13 @@ import {
 import { resetMatchState, seedTestFixtures, seedTestUser } from '../seed.js';
 
 // Mock the mailer so no real SMTP connection is attempted.
-vi.mock('../../mail/send.js', () => ({
-  sendEmail: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('../../mail/send.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../mail/send.js')>();
+  return {
+    ...original,
+    sendEmail: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 // Import the mock AFTER vi.mock so we get the spy reference.
 import { sendEmail } from '../../mail/send.js';

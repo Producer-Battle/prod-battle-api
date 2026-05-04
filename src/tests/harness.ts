@@ -76,6 +76,20 @@ export async function getJson<T = unknown>(
   return { status: res.status, json };
 }
 
+export async function patchJson<T = unknown>(
+  app: OpenAPIHono,
+  path: string,
+  body?: JsonBody,
+): Promise<{ status: number; json: T }> {
+  const res = await app.request(path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  const json = (await res.json().catch(() => ({}))) as T;
+  return { status: res.status, json };
+}
+
 // ─── High-level flow helpers ──────────────────────────────────────────────
 
 export type CreatedMatch = {

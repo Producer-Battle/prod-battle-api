@@ -16,6 +16,7 @@ import { and, desc, eq, gt, lt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { genres, matches, tournamentEntries, tournaments, users } from '../db/schema.js';
 import { getCategory } from '../game-rules/loader.js';
+import { logger } from '../observability/logger.js';
 
 export const tournamentScheduleRoutes = new OpenAPIHono();
 
@@ -454,12 +455,26 @@ tournamentScheduleRoutes.openapi(registerRoute, async (c) => {
   const { id } = c.req.valid('param');
   const d = db();
 
-  const honorRules = await getCategory('honor');
+  // Step-tagged diagnostics: each await is wrapped so the app.onError log
+  // includes a "step" field pinpointing exactly which DB call threw. These
+  // tags are INFO-level (free in prod) except on actual failure.
+  let step = 'get_honor_rules';
+  const honorRules = await getCategory('honor').catch((err: unknown) => {
+    logger.error('tournament.register.step_failed', { step, tournamentId: id }, err);
+    throw err;
+  });
+
+  step = 'select_user_honor';
   const [u] = await d
     .select({ honor: users.honor })
     .from(users)
     .where(eq(users.id, user.id))
-    .limit(1);
+    .limit(1)
+    .catch((err: unknown) => {
+      logger.error('tournament.register.step_failed', { step, tournamentId: id }, err);
+      throw err;
+    });
+
   // honorRules.gates may be missing or partially populated on rows that
   // predate the current schema. Default to 70 (the documented gate).
   const tournamentGate = honorRules.gates?.tournament ?? 70;
@@ -474,23 +489,43 @@ tournamentScheduleRoutes.openapi(registerRoute, async (c) => {
     );
   }
 
-  const [t] = await d.select().from(tournaments).where(eq(tournaments.id, id)).limit(1);
+  step = 'select_tournament';
+  const [t] = await d
+    .select()
+    .from(tournaments)
+    .where(eq(tournaments.id, id))
+    .limit(1)
+    .catch((err: unknown) => {
+      logger.error('tournament.register.step_failed', { step, tournamentId: id }, err);
+      throw err;
+    });
   if (!t) return c.json({ error: 'not_found', message: 'No such tournament.' }, 404);
   if (t.status !== 'open')
     return c.json({ error: 'closed', message: 'Registration is closed.' }, 400);
   if (new Date(t.registrationClosesAt) < new Date())
     return c.json({ error: 'closed', message: 'Registration window has ended.' }, 400);
 
-  const [count] = await d.execute<{ n: string }>(
-    sql`SELECT COUNT(*)::text AS n FROM tournament_entries WHERE tournament_id = ${id}`,
-  );
+  step = 'count_entries';
+  const [count] = await d
+    .execute<{ n: string }>(
+      sql`SELECT COUNT(*)::text AS n FROM tournament_entries WHERE tournament_id = ${id}`,
+    )
+    .catch((err: unknown) => {
+      logger.error('tournament.register.step_failed', { step, tournamentId: id }, err);
+      throw err;
+    });
   if (Number((count as { n: string } | undefined)?.n ?? 0) >= t.maxEntrants)
     return c.json({ error: 'full', message: 'Tournament is full.' }, 400);
 
+  step = 'insert_entry';
   await d
     .insert(tournamentEntries)
     .values({ tournamentId: id, userId: user.id })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .catch((err: unknown) => {
+      logger.error('tournament.register.step_failed', { step, tournamentId: id }, err);
+      throw err;
+    });
   return c.json({ ok: true as const }, 201);
 });
 

@@ -1289,6 +1289,138 @@ meRoutes.openapi(pinnedTracksRoute, async (c) => {
   return c.json({ pinnedSubmissionIds: submissionIds }, 200);
 });
 
+// ─── GET /me/email-prefs ─────────────────────────────────────────────────────
+
+const EmailPrefsShape = z
+  .object({
+    tournament_activity: z.boolean(),
+    daily_activity: z.boolean(),
+    match_results: z.boolean(),
+    honor_alerts: z.boolean(),
+    account_security: z.boolean(),
+    billing: z.boolean(),
+  })
+  .openapi('EmailPrefs');
+
+const getEmailPrefsRoute = createRoute({
+  method: 'get',
+  path: '/me/email-prefs',
+  tags: ['profile'],
+  summary: "Return the authenticated user's email notification preferences",
+  middleware: [requireAuth()] as const,
+  responses: {
+    200: {
+      description: 'Email preferences',
+      content: { 'application/json': { schema: EmailPrefsShape } },
+    },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(getEmailPrefsRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+  const d = db();
+
+  const [row] = await d
+    .select({ emailPrefs: users.emailPrefs })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .limit(1);
+
+  // Merge stored prefs with defaults so missing keys always return true.
+  const stored = row?.emailPrefs ?? {};
+  const prefs = {
+    tournament_activity: (stored as Record<string, boolean>).tournament_activity ?? true,
+    daily_activity: (stored as Record<string, boolean>).daily_activity ?? true,
+    match_results: (stored as Record<string, boolean>).match_results ?? true,
+    honor_alerts: (stored as Record<string, boolean>).honor_alerts ?? true,
+    account_security: (stored as Record<string, boolean>).account_security ?? true,
+    billing: (stored as Record<string, boolean>).billing ?? true,
+  };
+
+  return c.json(prefs, 200);
+});
+
+// ─── PATCH /me/email-prefs ────────────────────────────────────────────────────
+
+const PatchEmailPrefsBody = z
+  .object({
+    tournament_activity: z.boolean().optional(),
+    daily_activity: z.boolean().optional(),
+    match_results: z.boolean().optional(),
+    honor_alerts: z.boolean().optional(),
+    // account_security and billing can be sent but cannot be set to false.
+    account_security: z.boolean().optional(),
+    billing: z.boolean().optional(),
+  })
+  .openapi('PatchEmailPrefsBody');
+
+const patchEmailPrefsRoute = createRoute({
+  method: 'patch',
+  path: '/me/email-prefs',
+  tags: ['profile'],
+  summary: 'Update email notification preferences',
+  middleware: [requireAuth()] as const,
+  request: {
+    body: { content: { 'application/json': { schema: PatchEmailPrefsBody } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated preferences',
+      content: { 'application/json': { schema: EmailPrefsShape } },
+    },
+    400: { description: 'Cannot disable account or billing emails' },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+meRoutes.openapi(patchEmailPrefsRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+  const body = c.req.valid('json');
+
+  // Guard: account_security and billing cannot be set to false.
+  if (body.account_security === false || body.billing === false) {
+    return c.json(
+      {
+        error: 'cannot_disable',
+        message: 'Account and billing emails are required.',
+      },
+      400,
+    );
+  }
+
+  const d = db();
+
+  // Read current prefs, merge patch on top.
+  const [row] = await d
+    .select({ emailPrefs: users.emailPrefs })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .limit(1);
+
+  const current = row?.emailPrefs ?? {};
+  const merged = {
+    tournament_activity:
+      body.tournament_activity ?? (current as Record<string, boolean>).tournament_activity ?? true,
+    daily_activity:
+      body.daily_activity ?? (current as Record<string, boolean>).daily_activity ?? true,
+    match_results: body.match_results ?? (current as Record<string, boolean>).match_results ?? true,
+    honor_alerts: body.honor_alerts ?? (current as Record<string, boolean>).honor_alerts ?? true,
+    account_security:
+      body.account_security ?? (current as Record<string, boolean>).account_security ?? true,
+    billing: body.billing ?? (current as Record<string, boolean>).billing ?? true,
+  };
+
+  await d
+    .update(users)
+    .set({ emailPrefs: merged, updatedAt: new Date() })
+    .where(eq(users.id, user.id));
+
+  return c.json(merged, 200);
+});
+
 // ─── GET /me/active-matches ──────────────────────────────────────────────────
 // Rooms the caller is seated in that haven't ended yet. Powers the "Rejoin"
 // callout on /play after a navigate-away. Excludes abandoned matches (the
