@@ -1,63 +1,31 @@
 // Integration test: dailyRolloverCheck uses a real wall-clock comparison
 // (WHERE daily_date < today). This suite verifies the end-to-end flow without
-// mocking Date.now() - instead it back-dates the match's daily_date so the
-// SQL WHERE clause fires on today's real date.
+// mocking Date.now() - it back-dates the match's daily_date so the SQL WHERE
+// clause fires on today's real date.
 //
-// Requires: running Postgres on DATABASE_URL (prod_battle_test) and
-// optionally mailpit on MAILPIT_URL (http://localhost:8025).
-// If mailpit is unreachable, the email-arrival assertions are skipped with a
-// console.warn (mirrors auth-flow.test.ts pattern).
-//
-// Two-step cycle exercised:
-//   Step A: daily_date = today-1, status='submit'  -> status flips to 'vote',
-//           vote-open email sent to each submitter.
-//   Step B: daily_date = today-2, status='vote'    -> status flips to 'results',
-//           final_rank assigned to every submission.
+// The mailer is mocked via vi.mock so the test does not depend on a running
+// SMTP server. CI has no mailpit; an unmocked nodemailer.sendMail call hangs
+// for 30+ seconds trying to connect to localhost:1025 and timed out the
+// whole suite. The "integration" purpose preserved here is real DB + real
+// wall-clock; the email-was-sent assertion now reads the mock spy.
 
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '../../db/client.js';
-import { matches, submissions, users } from '../../db/schema.js';
+import { matches, submissions } from '../../db/schema.js';
 import { dailyRolloverCheck } from '../../realtime/tick.js';
 import { resetMatchState, seedTestFixtures, seedTestUser } from '../seed.js';
 
-const MAILPIT_URL = process.env.MAILPIT_URL ?? 'http://localhost:8025';
-const SMTP_HOST = process.env.SMTP_HOST ?? 'localhost';
-const SMTP_PORT = process.env.SMTP_PORT ?? '1025';
+vi.mock('../../mail/send.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../mail/send.js')>();
+  return {
+    ...original,
+    sendEmail: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
-// Poll mailpit for a message to the given address, returning the first match.
-// Returns null if none arrived within timeoutMs.
-async function pollMailpit(
-  toEmail: string,
-  subjectFragment: string,
-  timeoutMs = 8_000,
-): Promise<{ id: string } | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const res = await fetch(
-      `${MAILPIT_URL}/api/v1/messages?query=${encodeURIComponent(`to:${toEmail}`)}`,
-    ).catch(() => null);
-    if (res?.ok) {
-      type Msg = { ID: string; Subject: string; To: { Address: string }[] };
-      const json = (await res.json()) as { messages: Msg[] };
-      const match = json.messages.find(
-        (m) => m.To.some((t) => t.Address === toEmail) && m.Subject.includes(subjectFragment),
-      );
-      if (match) return { id: match.ID };
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return null;
-}
-
-async function deleteMailpitMessages(ids: string[]): Promise<void> {
-  if (!ids.length) return;
-  await fetch(`${MAILPIT_URL}/api/v1/messages`, {
-    method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ IDs: ids }),
-  }).catch(() => {});
-}
+import { sendEmail } from '../../mail/send.js';
+const sendEmailMock = sendEmail as ReturnType<typeof vi.fn>;
 
 // Insert a minimal daily match in the given status with daily_date offset from today.
 // daysAgo = 1 means daily_date = today - 1 day, i.e. "yesterday".
@@ -103,43 +71,18 @@ async function insertSubmission(matchId: string, userId: string, genreId: string
 }
 
 describe('dailyRolloverCheck (real clock / no Date.now mock)', () => {
-  let mailpitOk = false;
   let genreId: string;
-  const mailpitMsgIds: string[] = [];
 
-  // Set SMTP env vars so nodemailer sends to local mailpit.
-  // These are set process-wide before any test runs. If already set,
-  // we leave them alone (allows CI override).
   beforeAll(async () => {
-    if (!process.env.SMTP_HOST) process.env.SMTP_HOST = SMTP_HOST;
-    if (!process.env.SMTP_PORT) process.env.SMTP_PORT = SMTP_PORT;
-
-    // Probe mailpit reachability.
-    try {
-      const r = await fetch(`${MAILPIT_URL}/api/v1/messages`);
-      mailpitOk = r.ok;
-    } catch {
-      mailpitOk = false;
-    }
-    if (!mailpitOk) {
-      console.warn(
-        `[daily-rollover-clock] mailpit not reachable at ${MAILPIT_URL} - email assertions will be skipped`,
-      );
-    }
-
     const fixtures = await seedTestFixtures();
     genreId = fixtures.genreId;
   });
 
   beforeEach(async () => {
+    sendEmailMock.mockClear();
     await resetMatchState();
     const fixtures = await seedTestFixtures();
     genreId = fixtures.genreId;
-  });
-
-  afterAll(async () => {
-    // Best-effort: delete any messages we left in mailpit.
-    await deleteMailpitMessages(mailpitMsgIds);
   });
 
   // -----------------------------------------------------------------------
@@ -165,15 +108,13 @@ describe('dailyRolloverCheck (real clock / no Date.now mock)', () => {
       .limit(1);
     expect(row?.status).toBe('vote');
 
-    // Assert: vote-open email landed in mailpit for each submitter.
-    if (mailpitOk) {
-      for (const u of [userA, userB]) {
-        const msg = await pollMailpit(u.email, 'voting is now open');
-        expect(msg, `expected vote-open email for ${u.email}`).not.toBeNull();
-        if (msg) mailpitMsgIds.push(msg.id);
-      }
-    } else {
-      console.warn('[daily-rollover-clock] skipping email assertion - mailpit unreachable');
+    // Assert: vote-open email mock was called once per submitter with the
+    // right subject. Subject contains "voting is now open" per touchpoints.ts.
+    const calls = sendEmailMock.mock.calls.map((c) => c[0] as { to: string; subject: string });
+    const recipients = calls.map((c) => c.to).sort();
+    expect(recipients).toEqual([userA.email, userB.email].sort());
+    for (const c of calls) {
+      expect(c.subject.toLowerCase()).toContain('voting is now open');
     }
   });
 
