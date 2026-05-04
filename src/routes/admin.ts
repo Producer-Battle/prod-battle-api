@@ -498,6 +498,10 @@ const verifyEmailRoute = createRoute({
         },
       },
     },
+    400: {
+      description: 'Bad request (e.g. guest account)',
+      content: { 'application/json': { schema: AdminError } },
+    },
     401: {
       description: 'Unauthenticated',
       content: { 'application/json': { schema: AdminError } },
@@ -515,11 +519,21 @@ adminRoutes.openapi(verifyEmailRoute, async (c) => {
   const d = db();
 
   const [existing] = await d
-    .select({ id: users.id, emailVerified: users.emailVerified })
+    .select({ id: users.id, email: users.email, emailVerified: users.emailVerified })
     .from(users)
     .where(eq(users.id, id))
     .limit(1);
   if (!existing) return c.json({ error: 'not_found', message: 'No such user.' }, 404);
+
+  if (existing.email.endsWith('@guest.local')) {
+    return c.json(
+      {
+        error: 'guest_account',
+        message: "Guest audience-voter accounts can't be verified - they have no real email.",
+      },
+      400,
+    );
+  }
 
   if (existing.emailVerified) {
     return c.json({ id, emailVerified: true as const, alreadyVerified: true }, 200);
