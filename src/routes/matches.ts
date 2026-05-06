@@ -1,5 +1,5 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import {
@@ -10,6 +10,7 @@ import {
   matches,
   packPlays,
   samplePacks,
+  submissions,
   users,
 } from '../db/schema.js';
 import { generateMatchPack } from '../genres/generate.js';
@@ -145,6 +146,20 @@ const MatchResponse = z
       voted: z.number().int(),
       fullVoted: z.number().int(),
     }),
+    // The caller's existing submission for this match, if any. Populated
+    // when the request is authenticated (session cookie) OR includes
+    // ?user=<handle> for guest passthrough. Lets the Submit screen
+    // render the "already submitted" state on a fresh device or after
+    // a refresh - the server-side double-submit guard exists either
+    // way, this just keeps the UI honest with what's already in the DB.
+    mySubmission: z
+      .object({
+        id: z.string().uuid(),
+        audioUrl: z.string().url(),
+        title: z.string().nullable(),
+        durationSec: z.number().int().nullable(),
+      })
+      .nullable(),
   })
   .openapi('Match');
 
@@ -664,6 +679,10 @@ const getRouteDef = createRoute({
   summary: 'Fetch a match by room code',
   request: {
     params: z.object({ code: z.string() }),
+    // ?user=<handle> lets guest callers get their own mySubmission
+    // populated without a session cookie. Authenticated callers can
+    // omit it - the session wins.
+    query: z.object({ user: z.string().optional() }),
   },
   responses: {
     200: {
@@ -676,6 +695,7 @@ const getRouteDef = createRoute({
 
 matchesRoutes.openapi(getRouteDef, async (c) => {
   const { code } = c.req.valid('param');
+  const { user: handleParam } = c.req.valid('query');
   const d = db();
   const [row] = await d
     .select({
@@ -776,6 +796,45 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     }
   }
 
+  // Identify the caller so we can surface their existing submission (if any).
+  // Authenticated session wins; ?user=<handle> lets guests opt in too.
+  let callerUserId: string | null = c.var.user?.id ?? null;
+  if (!callerUserId && handleParam) {
+    const [u] = await d
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.handle, handleParam))
+      .limit(1);
+    callerUserId = u?.id ?? null;
+  }
+
+  let mySubmission: {
+    id: string;
+    audioUrl: string;
+    title: string | null;
+    durationSec: number | null;
+  } | null = null;
+  if (callerUserId) {
+    const [sub] = await d
+      .select({
+        id: submissions.id,
+        audioUrl: submissions.audioUrl,
+        title: submissions.title,
+        durationSec: submissions.durationSec,
+      })
+      .from(submissions)
+      .where(and(eq(submissions.matchId, row.id), eq(submissions.userId, callerUserId)))
+      .limit(1);
+    if (sub) {
+      mySubmission = {
+        id: sub.id,
+        audioUrl: await signUrl(sub.audioUrl, 3600),
+        title: sub.title ?? null,
+        durationSec: sub.durationSec ?? null,
+      };
+    }
+  }
+
   return c.json({
     id: row.id,
     mode: row.mode,
@@ -797,5 +856,6 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
       voted: voteStatsRow?.voted ?? 0,
       fullVoted: voteStatsRow?.full ?? 0,
     },
+    mySubmission,
   });
 });
