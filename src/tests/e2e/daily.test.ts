@@ -172,4 +172,58 @@ describe('mode: daily (Daily Challenge)', () => {
     expect(finalize.status).toBe(402);
     expect(finalize.json.error).toBe('payment_required');
   });
+
+  it("hides the daily sample pack until the caller enters today's challenge", async () => {
+    const paidUser = await seedTestUser(uniqueHandle('dl-peek'), {
+      plan: 'paid',
+      role: 'producer',
+    });
+    const paidApp = buildTestApp({ asUser: paidUser });
+    const dc = await getJson<DailyChallenge>(paidApp, '/daily-challenge');
+    const code = dc.json.roomCode;
+
+    // Anonymous caller (no session, no ?user) must see no signed pack URLs.
+    // The metadata is fine to leak - genre, code, count - but signed audio
+    // URLs would let them grab the kit and walk without commitment.
+    const anonApp = buildTestApp();
+    const anonView = await getJson<{
+      samplePack: { samples: Array<{ url: string }> } | null;
+    }>(anonApp, `/matches/${code}`);
+    expect(anonView.json.samplePack).toBeNull();
+
+    // Authenticated caller who hasn't entered yet also sees no pack.
+    const beforeEnter = await getJson<{
+      samplePack: { samples: unknown[] } | null;
+    }>(paidApp, `/matches/${code}`);
+    expect(beforeEnter.json.samplePack).toBeNull();
+
+    // Enter the daily challenge - this seats the user in match_players.
+    const enter = await postJson<{ ok: true; alreadyEntered: boolean }>(
+      paidApp,
+      '/daily-challenge/enter',
+    );
+    expect(enter.status).toBe(200);
+    expect(enter.json.alreadyEntered).toBe(false);
+
+    // After entry the pack is revealed with signed URLs.
+    const afterEnter = await getJson<{
+      samplePack: { samples: Array<{ url: string }> } | null;
+    }>(paidApp, `/matches/${code}`);
+    expect(afterEnter.json.samplePack).not.toBeNull();
+    expect(afterEnter.json.samplePack?.samples.length ?? 0).toBeGreaterThan(0);
+
+    // Idempotent: re-entering returns alreadyEntered=true and does not
+    // duplicate the seat.
+    const reenter = await postJson<{ ok: true; alreadyEntered: boolean }>(
+      paidApp,
+      '/daily-challenge/enter',
+    );
+    expect(reenter.json.alreadyEntered).toBe(true);
+  });
+
+  it('rejects /daily-challenge/enter from anonymous callers with 401', async () => {
+    const anonApp = buildTestApp();
+    const res = await postJson(anonApp, '/daily-challenge/enter');
+    expect(res.status).toBe(401);
+  });
 });

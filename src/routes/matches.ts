@@ -814,6 +814,7 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
     title: string | null;
     durationSec: number | null;
   } | null = null;
+  let callerIsSeated = false;
   if (callerUserId) {
     const [sub] = await d
       .select({
@@ -833,6 +834,23 @@ matchesRoutes.openapi(getRouteDef, async (c) => {
         durationSec: sub.durationSec ?? null,
       };
     }
+    const [seated] = await d
+      .select({ userId: matchPlayers.userId })
+      .from(matchPlayers)
+      .where(and(eq(matchPlayers.matchId, row.id), eq(matchPlayers.userId, callerUserId)))
+      .limit(1);
+    callerIsSeated = !!seated;
+  }
+
+  // Daily challenge: gate signed sample-pack URLs behind explicit
+  // commitment. The pack is only revealed once the caller has either
+  // already submitted OR clicked "Enter today's challenge" (which
+  // creates a match_players row). Without this anyone with the room
+  // code could pull every signed stem URL and walk - no honor cost,
+  // no record. Non-daily modes are unaffected: the pack is always
+  // visible to lobby members during submit phase.
+  if (row.mode === 'daily' && !callerIsSeated && !mySubmission) {
+    packPayload = null;
   }
 
   return c.json({

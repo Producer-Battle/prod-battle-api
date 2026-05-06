@@ -19,6 +19,7 @@ import { sql } from 'drizzle-orm';
 import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
+import { applyMatchOutcome } from '../honor/outcomes.js';
 import { sendIfOptedIn } from '../mail/gated.js';
 import { notifyShowcaseOpen, notifyTournamentStartIn24h } from '../mail/touchpoints.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
@@ -274,6 +275,15 @@ export async function dailyRolloverCheck(): Promise<void> {
     // tallyResults writes score + final_rank and flips status to 'results'.
     await tallyResults(row.id).catch((err: Error) =>
       console.error(`[tick] daily tallyResults failed for ${row.id}: ${err.message}`),
+    );
+
+    // Apply honor outcomes for everyone who clicked "Enter today's
+    // challenge" but didn't submit by midnight. The walk uses
+    // match_players, so producers who only viewed the daily without
+    // entering aren't affected (they have no row). Penalty size is
+    // controlled by NO_VOTE_PENALTY_FALLBACK.daily in honor/outcomes.
+    await applyMatchOutcome(row.id).catch((err: Error) =>
+      console.error(`[tick] daily applyMatchOutcome failed for ${row.id}: ${err.message}`),
     );
 
     await publish(`battle:${row.id}`, {

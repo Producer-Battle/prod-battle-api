@@ -22,8 +22,8 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, eq, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db/client.js';
-import { genres, matches, samplePacks } from '../db/schema.js';
-import { requirePaidTier } from '../middleware/session.js';
+import { genres, matchPlayers, matchTeams, matches, samplePacks } from '../db/schema.js';
+import { requireAuth, requirePaidTier } from '../middleware/session.js';
 
 export const dailyChallengeRoutes = new OpenAPIHono();
 
@@ -149,6 +149,16 @@ dailyChallengeRoutes.openapi(route, async (c) => {
 
       if (inserted.length > 0) {
         existingMatch = inserted[0] ?? null;
+        // Seat a single team so seatPlayer (in room-actions.ts) has somewhere
+        // to drop entries when producers click "Enter today's challenge".
+        // Without this row, seatPlayer's teams.length===0 guard returns early
+        // and no match_players record gets written.
+        if (existingMatch) {
+          await d
+            .insert(matchTeams)
+            .values({ matchId: existingMatch.id, seat: 0, name: 'daily' })
+            .onConflictDoNothing();
+        }
         break;
       }
 
@@ -191,4 +201,104 @@ dailyChallengeRoutes.openapi(route, async (c) => {
     },
     200,
   );
+});
+
+// POST /daily-challenge/enter
+//
+// Records a producer's commitment to today's daily match. Creating a
+// match_players row unlocks the signed sample-pack URLs (gated server-
+// side in GET /matches/:code) and means the dailyRolloverCheck path
+// will apply the abandon penalty if they don't submit before midnight.
+//
+// Idempotent: re-entering returns 200 without writing a duplicate row.
+const enterRoute = createRoute({
+  method: 'post',
+  path: '/daily-challenge/enter',
+  tags: ['daily-challenge'],
+  summary: "Commit to today's daily challenge so the sample pack unlocks",
+  responses: {
+    200: {
+      description: 'Entered (or already entered)',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            roomCode: z.string(),
+            alreadyEntered: z.boolean(),
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required' },
+    409: { description: 'Daily match has moved past submit phase' },
+    503: { description: 'No daily match resolved' },
+  },
+});
+
+dailyChallengeRoutes.use('/daily-challenge/enter', requireAuth());
+
+dailyChallengeRoutes.openapi(enterRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) throw new HTTPException(401, { message: 'auth required' });
+  const d = db();
+  const date = utcDateStr();
+
+  const [m] = await d
+    .select({ id: matches.id, roomCode: matches.roomCode, status: matches.status })
+    .from(matches)
+    .where(eq(matches.dailyDate, date))
+    .limit(1);
+  if (!m) throw new HTTPException(503, { message: 'No daily match exists yet for today.' });
+  if (m.status !== 'submit') {
+    throw new HTTPException(409, {
+      message: "Today's daily challenge is past the submit phase.",
+    });
+  }
+
+  const [team] = await d
+    .select({ id: matchTeams.id })
+    .from(matchTeams)
+    .where(eq(matchTeams.matchId, m.id))
+    .limit(1);
+  if (!team) {
+    // Backfill for any pre-existing daily match that was created before the
+    // matchTeams seeding above. One-time per row.
+    const [created] = await d
+      .insert(matchTeams)
+      .values({ matchId: m.id, seat: 0, name: 'daily' })
+      .returning({ id: matchTeams.id });
+    if (!created) throw new HTTPException(500, { message: 'Could not seat daily team.' });
+  }
+  const teamId =
+    team?.id ??
+    (
+      await d
+        .select({ id: matchTeams.id })
+        .from(matchTeams)
+        .where(eq(matchTeams.matchId, m.id))
+        .limit(1)
+    )[0]?.id;
+
+  const [existing] = await d
+    .select({ userId: matchPlayers.userId })
+    .from(matchPlayers)
+    .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, user.id)))
+    .limit(1);
+
+  if (existing) {
+    return c.json({ ok: true as const, roomCode: m.roomCode, alreadyEntered: true }, 200);
+  }
+
+  await d
+    .insert(matchPlayers)
+    .values({
+      matchId: m.id,
+      userId: user.id,
+      teamId: teamId ?? null,
+      isSpectator: false,
+      ready: false,
+    })
+    .onConflictDoNothing();
+
+  return c.json({ ok: true as const, roomCode: m.roomCode, alreadyEntered: false }, 200);
 });
