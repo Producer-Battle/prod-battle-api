@@ -981,6 +981,49 @@ export const gameRules = pgTable('game_rules', {
 });
 
 /*
+ * Support tickets - user-to-admin help requests.
+ *
+ * A ticket has a status lifecycle: open -> answered -> closed.
+ * Replies come from either the original user or an admin.
+ * Quota: 4 open/created tickets per user per UTC day (enforced in the route).
+ */
+
+export const ticketStatus = pgEnum('ticket_status', ['open', 'answered', 'closed']);
+export const ticketAuthorRole = pgEnum('ticket_author_role', ['user', 'admin']);
+
+export const supportTickets = pgTable(
+  'support_tickets',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    subject: varchar({ length: 120 }).notNull(),
+    status: ticketStatus().notNull().default('open'),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('support_tickets_user_id_idx').on(t.userId)],
+);
+
+export const supportTicketReplies = pgTable(
+  'support_ticket_replies',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    ticketId: uuid()
+      .notNull()
+      .references(() => supportTickets.id, { onDelete: 'cascade' }),
+    authorId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    authorRole: ticketAuthorRole().notNull(),
+    body: text().notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('support_ticket_replies_ticket_id_idx').on(t.ticketId)],
+);
+
+/*
  * Monthly playlists - supporter perk #7.
  * Admin-curated playlists, one per calendar month. Only published rows are
  * visible to paid users via GET /supporter/playlists. Admins create/edit

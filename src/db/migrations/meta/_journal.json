@@ -253,6 +253,13 @@
       "when": 1778000000000,
       "tag": "0035_tournament_bracket_enabled",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1778100000000,
+      "tag": "0036_support_tickets",
+      "breakpoints": true
     }
   ]
 }
