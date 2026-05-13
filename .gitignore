@@ -9,3 +9,4 @@ coverage/
 .vitest-cache/
 .turbo/
 openapi.json
+.atlas/

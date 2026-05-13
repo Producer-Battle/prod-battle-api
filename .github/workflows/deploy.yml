@@ -84,12 +84,19 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Apply Drizzle migrations BEFORE rolling the container. Migrations are
-  # expected to be forward-compatible (additive columns / tables, no drops
-  # the old image still references) so the currently-live old image keeps
-  # working until the redeploy completes. If migrate fails, we abort: the
-  # container stays on the previous image and schema, the image tag we just
-  # built sits in the registry unused.
+  # Apply schema migrations BEFORE rolling the container. Atlas owns the
+  # application step (see atlas.hcl); the underlying SQL files in
+  # src/db/migrations are still authored via drizzle-kit. On the very
+  # first run against an Atlas-naive prod DB, atlas reads `baseline` from
+  # atlas.hcl, creates `atlas_schema_revisions`, and marks everything
+  # through baseline as already-applied - so nothing is replayed. Future
+  # runs apply only migrations newer than the last applied revision.
+  #
+  # Migrations are expected to be forward-compatible (additive columns
+  # and tables, no drops the old image still references) so the live
+  # container keeps working until the redeploy completes. If apply fails
+  # we abort: the container stays on the previous image and schema, the
+  # freshly-built image tag sits unused in the registry.
   # ─────────────────────────────────────────────────────────────────────────────
   migrate:
     needs: [meta, build]
@@ -99,24 +106,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Run Drizzle migrations
+      - name: Check DATABASE_URL is configured
+        id: dbcheck
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [[ -z "$DATABASE_URL" ]]; then
             echo "DATABASE_URL secret not set - skipping migrate (bootstrap)."
-            exit 0
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-          pnpm db:migrate
+
+      - name: Apply Atlas migrations
+        if: steps.dbcheck.outputs.skip != 'true'
+        uses: ariga/atlas-action/migrate/apply@v1
+        with:
+          url: ${{ secrets.DATABASE_URL }}
+          config: file://atlas.hcl
+          env: prod
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Roll the Scaleway Serverless Container to the freshly-pushed SHA-tagged
