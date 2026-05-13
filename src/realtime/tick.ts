@@ -30,6 +30,7 @@ import {
   onEnterPhase,
   tallyResults,
 } from '../room/transitions.js';
+import { writeTickHeartbeat } from './heartbeat.js';
 import { runAsLeader } from './leader.js';
 import { publish } from './pubsub.js';
 
@@ -1797,6 +1798,11 @@ export function startTickLoop(): () => void {
   const stopLeader = runAsLeader('leader:tick', async () => {
     // Called once we become leader. Start the 1s tick interval.
     tickTimer = setInterval(() => {
+      // Heartbeat first so a stuck inner task doesn't suppress the signal.
+      // Watchdog reads this key via /health/tick - see heartbeat.ts.
+      writeTickHeartbeat().catch((err: Error) =>
+        console.error('[heartbeat] write error:', err.message),
+      );
       tick().catch((err: Error) => console.error('[tick] error:', err.message));
       lobbyOrchestrator().catch((err: Error) =>
         console.error('[lobby-orchestrator] error:', err.message),
