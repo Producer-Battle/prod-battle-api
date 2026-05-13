@@ -274,6 +274,13 @@
       "when": 1778300000000,
       "tag": "0038_wasabi_url_rewrite",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1778400000000,
+      "tag": "0039_atlas_marker",
+      "breakpoints": true
     }
   ]
 }
