@@ -118,6 +118,10 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # ariga/atlas-action shells out to the `atlas` binary - install it first.
+      - uses: ariga/setup-atlas@v0
+        if: steps.dbcheck.outputs.skip != 'true'
+
       - name: Apply Atlas migrations
         if: steps.dbcheck.outputs.skip != 'true'
         uses: ariga/atlas-action/migrate/apply@v1
