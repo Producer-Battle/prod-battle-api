@@ -260,6 +260,20 @@
       "when": 1778100000000,
       "tag": "0036_support_tickets",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1778200000000,
+      "tag": "0037_users_anon_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1778300000000,
+      "tag": "0038_wasabi_url_rewrite",
+      "breakpoints": true
     }
   ]
 }
