@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { readTickHeartbeat } from '../realtime/heartbeat.js';
+import { LEADER_LOCK_TTL_SEC } from '../realtime/leader.js';
 
 export const healthRoutes = new OpenAPIHono();
 
@@ -38,14 +39,15 @@ healthRoutes.openapi(route, (c) =>
 );
 
 // Tick watchdog. The leader replica writes a Redis heartbeat each tick;
-// this endpoint reads it and reports staleness. Threshold matches the
-// leader-lock TTL (5s in leader.ts) - past that point, a stuck leader
-// should have lost the lock to another replica; if no heartbeat exists,
-// either no replica holds leadership or the leader is wedged.
+// this endpoint reads it and reports staleness. Threshold is derived
+// from LEADER_LOCK_TTL_SEC so the two move together - past that point a
+// stuck leader should have lost its lock to another replica, and if no
+// heartbeat exists either no replica holds leadership or the leader is
+// wedged.
 //
-// Returns 503 on stale/missing so any HTTP probe (UptimeRobot, Grafana,
-// Scaleway healthcheck) can page without parsing the JSON body.
-const TICK_STALE_MS = 5000;
+// Returns 503 on stale/missing so any HTTP probe can page without
+// parsing the JSON body.
+const TICK_STALE_MS = LEADER_LOCK_TTL_SEC * 1000;
 
 const TickHealthResponse = z
   .object({
