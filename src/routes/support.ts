@@ -114,21 +114,27 @@ supportRoutes.openapi(createTicketRoute, async (c) => {
 
   const { subject, body } = c.req.valid('json');
 
-  const [ticket] = await d
-    .insert(supportTickets)
-    .values({ userId: user.id, subject })
-    .returning({ id: supportTickets.id });
-
-  if (!ticket) return c.json({ error: 'create_failed', message: 'Could not create ticket.' }, 429);
-
-  await d.insert(supportTicketReplies).values({
-    ticketId: ticket.id,
-    authorId: user.id,
-    authorRole: 'user',
-    body,
+  // Atomic create: ticket + first reply (the original description) live or
+  // die together. Prior to this they were two separate statements, which
+  // produced orphan rows when the second insert failed - the user would
+  // then open the ticket and see no description, because the description
+  // IS the first reply.
+  const ticketId = await d.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(supportTickets)
+      .values({ userId: user.id, subject })
+      .returning({ id: supportTickets.id });
+    if (!row) throw new Error('ticket_insert_returned_no_row');
+    await tx.insert(supportTicketReplies).values({
+      ticketId: row.id,
+      authorId: user.id,
+      authorRole: 'user',
+      body,
+    });
+    return row.id;
   });
 
-  return c.json({ id: ticket.id }, 201);
+  return c.json({ id: ticketId }, 201);
 });
 
 // ─── GET /support/tickets ─────────────────────────────────────────────────────
