@@ -1,6 +1,6 @@
 // Tick loop heartbeat. The leader replica writes `tick:heartbeat` to Redis
-// every tick; any replica (or external probe via /health/tick) can read it
-// to detect that the global tick loop has stalled.
+// on every interval; any replica (or external probe via /health/tick) can
+// read it to detect that the global tick loop has stalled.
 //
 // Why this exists: leader election via Redis TTL (see leader.ts) means a
 // stuck leader holds the lock for up to LEADER_LOCK_TTL_SEC before another
