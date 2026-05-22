@@ -1,8 +1,9 @@
 // Admin support-ticket management.
 //
-// GET  /admin/support/tickets          - list all tickets, filter by status
-// POST /admin/support/tickets/:id/reply - admin reply
-// POST /admin/support/tickets/:id/close - close a ticket
+// GET    /admin/support/tickets            - list all tickets, filter by status
+// POST   /admin/support/tickets/:id/reply  - admin reply
+// POST   /admin/support/tickets/:id/close  - close a ticket
+// DELETE /admin/support/tickets/:id        - hard-delete a ticket and replies
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { eq, sql } from 'drizzle-orm';
@@ -337,4 +338,46 @@ adminSupportRoutes.openapi(closeTicketRoute, async (c) => {
 
   if (!updated) return c.json({ error: 'not_found', message: 'No such ticket.' }, 404);
   return c.json({ id: updated.id, status: 'closed' as const }, 200);
+});
+
+// ─── DELETE /admin/support/tickets/:id ────────────────────────────────────────
+//
+// Hard-delete a ticket. Replies cascade via the FK constraint
+// (support_ticket_replies.ticket_id ON DELETE CASCADE).
+
+const deleteTicketRoute = createRoute({
+  method: 'delete',
+  path: '/admin/support/tickets/{id}',
+  tags: ['admin'],
+  summary: 'Delete a ticket (and all replies)',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Deleted',
+      content: {
+        'application/json': {
+          schema: z.object({ id: z.string().uuid(), deleted: z.literal(true) }),
+        },
+      },
+    },
+    401: { description: 'Unauthenticated', content: { 'application/json': { schema: AdminErr } } },
+    403: { description: 'Forbidden', content: { 'application/json': { schema: AdminErr } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: AdminErr } } },
+  },
+});
+
+adminSupportRoutes.openapi(deleteTicketRoute, async (c) => {
+  const g = requireAdmin(c);
+  if (!g.ok) return c.json(g.body, g.status);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [deleted] = await d
+    .delete(supportTickets)
+    .where(eq(supportTickets.id, id))
+    .returning({ id: supportTickets.id });
+
+  if (!deleted) return c.json({ error: 'not_found', message: 'No such ticket.' }, 404);
+  return c.json({ id: deleted.id, deleted: true as const }, 200);
 });
