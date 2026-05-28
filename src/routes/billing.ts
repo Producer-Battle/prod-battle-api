@@ -165,23 +165,28 @@ billingRoutes.openapi(checkoutRoute, async (c) => {
 });
 
 // ─── POST /billing/webhook ────────────────────────────────────────────────────
+//
+// Plain Hono route, NOT an OpenAPI/zod-json route. Mollie ALWAYS delivers
+// webhooks as application/x-www-form-urlencoded with a single `id=tr_xxx`
+// field - it never sends JSON. A json-only route silently parsed id as
+// undefined and 400'd every real delivery, so the plan-flip never ran. We
+// read the id from form or json so both Mollie and manual/test callers work.
 
-const webhookBody = z.object({ id: z.string() });
+billingRoutes.post('/billing/webhook', async (c) => {
+  const contentType = c.req.header('content-type') ?? '';
+  let id: string | undefined;
+  if (contentType.includes('application/json')) {
+    const body = (await c.req.json().catch(() => ({}))) as { id?: unknown };
+    if (typeof body.id === 'string') id = body.id;
+  } else {
+    const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
+    if (typeof form.id === 'string') id = form.id;
+  }
 
-const webhookRoute = createRoute({
-  method: 'post',
-  path: '/billing/webhook',
-  tags: ['billing'],
-  summary: 'Mollie payment webhook (first + recurring)',
-  request: { body: { content: { 'application/json': { schema: webhookBody } } } },
-  responses: {
-    200: { description: 'Processed (or no-op when billing not configured)' },
-    400: { description: 'Transient failure - Mollie should retry' },
-  },
-});
-
-billingRoutes.openapi(webhookRoute, async (c) => {
-  const { id } = c.req.valid('json');
+  if (!id) {
+    console.warn('[billing] webhook missing id');
+    return c.json({ ok: true, note: 'no_id' }, 200);
+  }
   console.info('[billing] webhook received:', id);
 
   const mollie = getMollieClient();
