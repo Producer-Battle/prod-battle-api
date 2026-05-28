@@ -375,14 +375,28 @@ export async function processPaymentWebhook(
     if (interval === 'yearly') start.setUTCFullYear(start.getUTCFullYear() + 1);
     else start.setUTCMonth(start.getUTCMonth() + 1);
 
-    const sub = await mollie.customerSubscriptions.create({
-      customerId,
-      amount: { currency: 'EUR', value: amount },
-      interval: MOLLIE_INTERVAL[interval],
-      description: label,
-      webhookUrl: webhookUrl(),
-      startDate: start.toISOString().slice(0, 10),
-    });
+    let sub: { id: string };
+    try {
+      sub = await mollie.customerSubscriptions.create({
+        customerId,
+        amount: { currency: 'EUR', value: amount },
+        interval: MOLLIE_INTERVAL[interval],
+        description: label,
+        webhookUrl: webhookUrl(),
+        startDate: start.toISOString().slice(0, 10),
+      });
+    } catch (err) {
+      // Belt-and-suspenders for the case the DB guard above can't catch (e.g.
+      // a prior create succeeded at Mollie but our DB write failed, or a
+      // customer with no user row): Mollie rejects the duplicate with "a
+      // subscription with the same description already exists". Treat that as
+      // already-done and return 200 so Mollie stops retrying.
+      if ((err as Error).message?.toLowerCase().includes('already exists')) {
+        console.info(`[billing] subscription already exists for ${customerId}, treating as done`);
+        return 'already_subscribed';
+      }
+      throw err;
+    }
 
     const updated = await d
       .update(users)
