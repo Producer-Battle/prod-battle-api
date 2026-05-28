@@ -350,6 +350,22 @@ export async function processPaymentWebhook(
   const seq = payment.sequenceType ?? 'oneoff';
 
   if (seq === 'first') {
+    // Idempotency: Mollie retries any non-200 webhook and can deliver the
+    // same first-payment event more than once. Without this guard the second
+    // delivery tries to create a duplicate subscription, Mollie returns
+    // "a subscription with the same description already exists", we 400, and
+    // Mollie retries forever. If this customer already has a subscription on
+    // file, treat the event as already-processed.
+    const [existing] = await d
+      .select({ subId: users.mollieSubscriptionId })
+      .from(users)
+      .where(eq(users.mollieCustomerId, customerId))
+      .limit(1);
+    if (existing?.subId) {
+      console.info(`[billing] first payment for ${customerId} already has subscription, skipping`);
+      return 'already_subscribed';
+    }
+
     const interval: Interval = payment.metadata?.interval ?? 'monthly';
     const { amount, label } = PRICES[interval];
 

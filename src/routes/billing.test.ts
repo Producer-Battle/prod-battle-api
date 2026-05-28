@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Captures the last update().set() values so we can assert plan transitions.
 let lastUpdate: Record<string, unknown> | null = null;
+// Configurable result of the idempotency SELECT (users by mollieCustomerId).
+let selectResult: Array<Record<string, unknown>> = [{ mollieCustomerId: null }];
 
 vi.mock('../db/client.js', () => ({
   db: () => ({
@@ -24,7 +26,7 @@ vi.mock('../db/client.js', () => ({
     }),
     select: () => ({
       from: () => ({
-        where: () => ({ limit: () => Promise.resolve([{ mollieCustomerId: null }]) }),
+        where: () => ({ limit: () => Promise.resolve(selectResult) }),
       }),
     }),
   }),
@@ -58,6 +60,28 @@ type MollieMock = Parameters<typeof import('./billing.js').processPaymentWebhook
 describe('processPaymentWebhook - first payment', () => {
   beforeEach(() => {
     lastUpdate = null;
+    selectResult = [{ mollieCustomerId: null }];
+  });
+
+  it('is idempotent: skips creation if the customer already has a subscription', async () => {
+    selectResult = [{ subId: 'sub_existing' }];
+    const createSub = vi.fn();
+    const mockMollie = {
+      payments: {
+        get: vi.fn().mockResolvedValue({
+          status: PaymentStatus.paid,
+          customerId: 'cst_abc',
+          sequenceType: 'first',
+          metadata: { interval: 'monthly' },
+        }),
+      },
+      customerSubscriptions: { create: createSub },
+    };
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_dupe');
+    expect(result).toBe('already_subscribed');
+    expect(createSub).not.toHaveBeenCalled();
+    expect(lastUpdate).toBeNull();
   });
 
   it('creates a subscription and sets plan=paid on a paid first payment', async () => {
