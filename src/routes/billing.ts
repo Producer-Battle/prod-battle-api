@@ -1,23 +1,31 @@
-// POST /billing/checkout  - creates a Mollie payment link for the authenticated user.
-// POST /billing/webhook   - Mollie webhook: transitions user plan on payment events.
+// Recurring Supporter subscriptions via Mollie.
 //
-// Mollie is used instead of Stripe because the operator is EU-based. The Mollie
-// API key is read from MOLLIE_API_KEY (optional). When not configured:
-//   - POST /billing/checkout  returns 503 billing_not_configured.
-//   - POST /billing/webhook   returns 200 no-op so Mollie doesn't retry.
+// Endpoints:
+//   POST /billing/checkout - start a subscription. Creates a "first" payment
+//                            that, once paid, establishes a mandate. Returns a
+//                            hosted checkout URL.
+//   POST /billing/webhook  - Mollie calls this for every payment. We branch on
+//                            sequenceType:
+//                              first     -> mandate now exists; create the
+//                                           recurring subscription, set
+//                                           plan=paid + planExpiresAt.
+//                              recurring -> renewal; extend planExpiresAt.
+//   POST /billing/cancel   - cancel the Mollie subscription. Plan stays 'paid'
+//                            until planExpiresAt; the expiration cron then
+//                            demotes to 'free'.
+//   GET  /billing/status   - current plan + subscription state for the UI.
 //
-// Webhook flow (Mollie retries until 200):
-//   1. Mollie POSTs { id: 'tr_xxx' } or { id: 'sub_xxx' } to /billing/webhook.
-//   2. We look up the payment/subscription via the API.
-//   3. On paid/active  -> SET plan='paid'.
-//   4. On cancelled/expired -> SET plan='free'.
+// Mollie (EU) instead of Stripe because the operator is EU-based. MOLLIE_API_KEY
+// is optional; when unset, /checkout returns 503 and /webhook no-ops with 200.
 //
-// Logging: all incoming webhook payloads are logged at info level for the first
-// month of operation to aid debugging.
+// Security note: Mollie webhooks deliberately carry only a resource id. We
+// re-fetch the payment from Mollie's API and only act on real, paid payments
+// that belong to a customer we have on file - a forged id resolves to a 404 or
+// to a customer we don't know, so it can't grant a plan.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { PaymentStatus, SubscriptionStatus, createMollieClient } from '@mollie/api-client';
-import { eq, sql } from 'drizzle-orm';
+import { PaymentStatus, SequenceType, createMollieClient } from '@mollie/api-client';
+import { eq } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { syncSupporterRole } from '../discord/role-sync.js';
@@ -26,49 +34,64 @@ import { requireAuth } from '../middleware/session.js';
 
 export const billingRoutes = new OpenAPIHono();
 
-// Lazy Mollie client - only instantiated when MOLLIE_API_KEY is present.
-function getMollieClient() {
+type MollieClient = ReturnType<typeof createMollieClient>;
+
+function getMollieClient(): MollieClient | null {
   if (!env.MOLLIE_API_KEY) return null;
   return createMollieClient({ apiKey: env.MOLLIE_API_KEY });
 }
 
-// ─── POST /billing/checkout ───────────────────────────────────────────────────
-
 const checkoutBody = z.object({
   interval: z.enum(['monthly', 'yearly']),
 });
+type Interval = z.infer<typeof checkoutBody>['interval'];
+
+// Prices per interval, formatted as Mollie amount strings.
+// Yearly is monthly x 12 with 20% off (€2.95 x 12 x 0.80 = €28.32).
+const PRICES: Record<Interval, { amount: string; label: string }> = {
+  monthly: { amount: '2.95', label: 'Prod Battle Supporter - monthly' },
+  yearly: { amount: '28.32', label: 'Prod Battle Supporter - yearly (save 20%)' },
+};
+
+// Mollie interval strings + how many days of access each grants (with a 2-day
+// grace so a slightly-late renewal charge doesn't briefly demote the user).
+const MOLLIE_INTERVAL: Record<Interval, string> = {
+  monthly: '1 month',
+  yearly: '12 months',
+};
+function accessUntil(interval: Interval, from = new Date()): Date {
+  const d = new Date(from);
+  if (interval === 'yearly') d.setUTCDate(d.getUTCDate() + 365 + 2);
+  else d.setUTCDate(d.getUTCDate() + 30 + 2);
+  return d;
+}
+
+const apiBase = () => env.AUTH_BASE_URL ?? 'https://api.prodbattle.com';
+const webBase = () => env.WEB_ORIGIN?.split(',')[0] ?? 'https://prodbattle.com';
+const webhookUrl = () => `${apiBase()}/billing/webhook`;
+
+// ─── POST /billing/checkout ───────────────────────────────────────────────────
 
 const checkoutRoute = createRoute({
   method: 'post',
   path: '/billing/checkout',
   tags: ['billing'],
-  summary: 'Create a Mollie payment link for the Pro subscription',
-  request: {
-    body: { content: { 'application/json': { schema: checkoutBody } } },
-  },
+  summary: 'Start a recurring Supporter subscription',
+  request: { body: { content: { 'application/json': { schema: checkoutBody } } } },
   responses: {
     200: {
       description: 'Checkout URL',
-      content: {
-        'application/json': {
-          schema: z.object({ checkoutUrl: z.string().url() }),
-        },
-      },
+      content: { 'application/json': { schema: z.object({ checkoutUrl: z.string().url() }) } },
     },
     401: { description: 'Unauthenticated' },
+    409: { description: 'Already subscribed' },
     503: { description: 'Billing not configured' },
   },
 });
 
-// Prices per interval. In EUR, formatted as Mollie amount strings.
-// Yearly is monthly x 12 with 20% off (€2.95 x 12 x 0.80 = €28.32).
-const PRICES: Record<z.infer<typeof checkoutBody>['interval'], { amount: string; label: string }> =
-  {
-    monthly: { amount: '2.95', label: 'Prod Battle Supporter - monthly' },
-    yearly: { amount: '28.32', label: 'Prod Battle Supporter - yearly (save 20%)' },
-  };
-
 billingRoutes.use('/billing/checkout', requireAuth());
+billingRoutes.use('/billing/cancel', requireAuth());
+billingRoutes.use('/billing/status', requireAuth());
 
 billingRoutes.openapi(checkoutRoute, async (c) => {
   const mollie = getMollieClient();
@@ -76,23 +99,31 @@ billingRoutes.openapi(checkoutRoute, async (c) => {
     return c.json({ error: 'billing_not_configured', message: 'Billing is not enabled yet.' }, 503);
   }
 
-  // c.var.user is guaranteed non-null by requireAuth() middleware above.
   const user = c.var.user;
   if (!user) return c.json({ error: 'unauthenticated' }, 401);
   const { interval } = c.req.valid('json');
   const d = db();
 
-  // Resolve or create a Mollie customer for the user so payment history is
-  // attributed and subscriptions can be managed later.
-  let mollieCustomerId: string | null = null;
   const [row] = await d
-    .select({ mollieCustomerId: users.mollieCustomerId })
+    .select({
+      mollieCustomerId: users.mollieCustomerId,
+      plan: users.plan,
+      subscriptionStatus: users.subscriptionStatus,
+    })
     .from(users)
     .where(eq(users.id, user.id))
     .limit(1);
 
-  mollieCustomerId = row?.mollieCustomerId ?? null;
+  if (row?.plan === 'paid' && row?.subscriptionStatus === 'active') {
+    return c.json(
+      { error: 'already_subscribed', message: 'You already have an active subscription.' },
+      409,
+    );
+  }
 
+  // Resolve or create the Mollie customer so payments + mandates + the
+  // subscription all attach to one identity.
+  let mollieCustomerId = row?.mollieCustomerId ?? null;
   if (!mollieCustomerId) {
     const customer = await mollie.customers.create({
       name: user.handle ?? undefined,
@@ -108,24 +139,25 @@ billingRoutes.openapi(checkoutRoute, async (c) => {
 
   const { amount, label } = PRICES[interval];
 
-  // Create a payment link. The customer can complete payment in their browser.
-  // We use a payment link rather than a direct payment so the user is not
-  // required to have a stored mandate yet.
-  const link = await mollie.paymentLinks.create({
-    description: label,
+  // A "first" sequence payment establishes a reusable mandate when it's paid.
+  // We create the recurring subscription in the webhook once the mandate
+  // exists. metadata.interval is read back there to size the subscription.
+  const payment = await mollie.payments.create({
     amount: { currency: 'EUR', value: amount },
     customerId: mollieCustomerId,
-    // Mollie calls /billing/webhook when payment status changes.
-    webhookUrl: `${env.AUTH_BASE_URL ?? 'https://api.prodbattle.com'}/billing/webhook`,
-    redirectUrl: `${env.WEB_ORIGIN ?? 'https://prodbattle.com'}/settings?billing=success`,
-    reusable: false,
+    sequenceType: SequenceType.first,
+    description: label,
+    redirectUrl: `${webBase()}/settings?billing=success`,
+    webhookUrl: webhookUrl(),
+    metadata: { userId: user.id, interval },
   });
 
-  let checkoutUrl: string;
-  try {
-    checkoutUrl = link.getPaymentUrl();
-  } catch {
-    console.error('[billing] Mollie payment link missing checkoutUrl');
+  // Prefer the typed accessor; fall back to the HAL link if the SDK's
+  // overloaded return type hides it from TS.
+  const checkoutUrl =
+    (payment as { _links?: { checkout?: { href?: string } } })._links?.checkout?.href ?? '';
+  if (!checkoutUrl) {
+    console.error('[billing] Mollie first payment missing checkout URL');
     return c.json({ error: 'checkout_failed', message: 'Could not create checkout URL.' }, 500);
   }
 
@@ -134,136 +166,257 @@ billingRoutes.openapi(checkoutRoute, async (c) => {
 
 // ─── POST /billing/webhook ────────────────────────────────────────────────────
 
-const webhookBody = z.object({
-  // Mollie sends either a payment id (tr_xxx), subscription id (sub_xxx), or
-  // other resource id. We handle payment and subscription ids.
-  id: z.string(),
-});
+const webhookBody = z.object({ id: z.string() });
 
 const webhookRoute = createRoute({
   method: 'post',
   path: '/billing/webhook',
   tags: ['billing'],
-  summary: 'Mollie payment/subscription status webhook',
-  request: {
-    // Mollie sends application/x-www-form-urlencoded, but also supports JSON.
-    // We accept JSON here; the middleware chain handles raw body parsing.
-    body: { content: { 'application/json': { schema: webhookBody } } },
-  },
+  summary: 'Mollie payment webhook (first + recurring)',
+  request: { body: { content: { 'application/json': { schema: webhookBody } } } },
   responses: {
     200: { description: 'Processed (or no-op when billing not configured)' },
-    400: { description: 'Unhandled or unrecognised webhook payload' },
+    400: { description: 'Transient failure - Mollie should retry' },
   },
 });
 
 billingRoutes.openapi(webhookRoute, async (c) => {
-  const payload = c.req.valid('json');
-
-  // Log all incoming payloads at info level for the first month.
-  console.info('[billing] webhook received:', JSON.stringify(payload));
+  const { id } = c.req.valid('json');
+  console.info('[billing] webhook received:', id);
 
   const mollie = getMollieClient();
-  if (!mollie) {
-    // MOLLIE_API_KEY not set - no-op so Mollie doesn't keep retrying.
-    return c.json({ ok: true, note: 'billing_not_configured' }, 200);
-  }
-
-  const { id } = payload;
-  const d = db();
+  if (!mollie) return c.json({ ok: true, note: 'billing_not_configured' }, 200);
 
   try {
-    if (id.startsWith('tr_') || id.startsWith('test_')) {
-      // Payment event - look up the payment.
-      const payment = await mollie.payments.get(id);
-      const customerId = (payment as { customerId?: string }).customerId ?? null;
-
-      if (!customerId) {
-        // Payment not linked to a customer - not from our checkout flow.
-        return c.json({ ok: true, note: 'no_customer_id' }, 200);
-      }
-
-      if (payment.status === PaymentStatus.paid) {
-        const updated = await d
-          .update(users)
-          .set({ plan: 'paid', updatedAt: new Date() })
-          .where(eq(users.mollieCustomerId, customerId))
-          .returning({ id: users.id });
-        console.info(`[billing] plan set to paid for Mollie customer ${customerId}`);
-        // Best-effort Discord role grant - don't await so webhook stays fast.
-        for (const u of updated) {
-          syncSupporterRole(u.id, true).catch(() => undefined);
-        }
-      } else if (
-        payment.status === PaymentStatus.canceled ||
-        payment.status === PaymentStatus.expired ||
-        payment.status === PaymentStatus.failed
-      ) {
-        // A failed/cancelled payment does not necessarily mean the subscription
-        // ended - only demote on explicit subscription cancellation below.
-        console.info(
-          `[billing] payment ${id} status=${payment.status} for customer ${customerId} - no plan change`,
-        );
-      }
-
-      return c.json({ ok: true }, 200);
-    }
-
-    if (id.startsWith('sub_')) {
-      // Subscription event.
-      // Mollie doesn't send the customerId in the webhook body; we have to
-      // extract it from the subscription resource URL or fetch the subscription
-      // and read the customerId field.
-      //
-      // The subscription binder requires both customerId and subscriptionId.
-      // Since we don't know the customerId here, we use the raw payments API
-      // to get the latest subscription payment and infer the customerId.
-      //
-      // For now, log and acknowledge - a future improvement can store the
-      // subscription id -> customer id mapping at checkout time.
-      console.info(
-        `[billing] subscription event ${id} - subscription-level cancel not yet handled`,
-      );
-      return c.json({ ok: true }, 200);
-    }
-
-    // Unknown resource type - return 200 so Mollie doesn't retry.
-    console.warn(`[billing] unrecognised webhook id: ${id}`);
-    return c.json({ ok: true, note: 'unrecognised_id' }, 200);
+    const result = await processPaymentWebhook(mollie, id);
+    return c.json({ ok: true, note: result }, 200);
   } catch (err) {
-    console.error('[billing] webhook processing error:', (err as Error).message);
-    // Return 400 so Mollie retries - this was a transient failure, not a
-    // deliberate no-op.
+    // 400 => Mollie retries. Use only for genuinely transient failures.
+    console.error('[billing] webhook error:', (err as Error).message);
     return c.json({ error: 'webhook_error', message: (err as Error).message }, 400);
   }
 });
 
-// ─── Explicit plan transition helpers (used by unit tests) ───────────────────
-//
-// These are extracted so tests can inject a mock Mollie client without needing
-// a live API key.
+// ─── POST /billing/cancel ─────────────────────────────────────────────────────
 
-export async function applyPlanFromPayment(
-  mollieClient: ReturnType<typeof createMollieClient>,
-  paymentId: string,
-): Promise<'paid' | 'no_change' | 'not_found'> {
+const cancelRoute = createRoute({
+  method: 'post',
+  path: '/billing/cancel',
+  tags: ['billing'],
+  summary: 'Cancel the active subscription (access continues until period end)',
+  responses: {
+    200: {
+      description: 'Cancelled',
+      content: {
+        'application/json': {
+          schema: z.object({
+            cancelled: z.boolean(),
+            accessUntil: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    401: { description: 'Unauthenticated' },
+    404: { description: 'No active subscription' },
+    503: { description: 'Billing not configured' },
+  },
+});
+
+billingRoutes.openapi(cancelRoute, async (c) => {
+  const mollie = getMollieClient();
+  if (!mollie) return c.json({ error: 'billing_not_configured', message: 'Billing is off.' }, 503);
+
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
   const d = db();
-  const payment = await mollieClient.payments.get(paymentId);
-  const customerId = (payment as { customerId?: string }).customerId ?? null;
 
-  if (!customerId) return 'not_found';
+  const [row] = await d
+    .select({
+      mollieCustomerId: users.mollieCustomerId,
+      mollieSubscriptionId: users.mollieSubscriptionId,
+      planExpiresAt: users.planExpiresAt,
+    })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .limit(1);
 
-  if (payment.status === PaymentStatus.paid) {
+  if (!row?.mollieCustomerId || !row?.mollieSubscriptionId) {
+    return c.json({ error: 'no_subscription', message: 'No active subscription to cancel.' }, 404);
+  }
+
+  // Cancel at Mollie - stops future charges. Mollie keeps the mandate so the
+  // user can resubscribe later without re-entering card details.
+  await mollie.customerSubscriptions.cancel(row.mollieSubscriptionId, {
+    customerId: row.mollieCustomerId,
+  });
+
+  // Keep plan='paid' until the period they already paid for ends; the cron
+  // demotes them after planExpiresAt.
+  await d
+    .update(users)
+    .set({ subscriptionStatus: 'canceled', updatedAt: new Date() })
+    .where(eq(users.id, user.id));
+
+  return c.json(
+    { cancelled: true, accessUntil: row.planExpiresAt ? row.planExpiresAt.toISOString() : null },
+    200,
+  );
+});
+
+// ─── GET /billing/status ──────────────────────────────────────────────────────
+
+const statusRoute = createRoute({
+  method: 'get',
+  path: '/billing/status',
+  tags: ['billing'],
+  summary: 'Current plan + subscription state',
+  responses: {
+    200: {
+      description: 'Status',
+      content: {
+        'application/json': {
+          schema: z.object({
+            plan: z.enum(['free', 'paid']),
+            subscriptionStatus: z.string().nullable(),
+            planExpiresAt: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    401: { description: 'Unauthenticated' },
+  },
+});
+
+billingRoutes.openapi(statusRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated' }, 401);
+  const d = db();
+  const [row] = await d
+    .select({
+      plan: users.plan,
+      subscriptionStatus: users.subscriptionStatus,
+      planExpiresAt: users.planExpiresAt,
+    })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .limit(1);
+  return c.json(
+    {
+      plan: row?.plan ?? 'free',
+      subscriptionStatus: row?.subscriptionStatus ?? null,
+      planExpiresAt: row?.planExpiresAt ? row.planExpiresAt.toISOString() : null,
+    },
+    200,
+  );
+});
+
+// ─── Core webhook processing (exported for tests) ─────────────────────────────
+
+type PaymentLike = {
+  status: string;
+  customerId?: string | null;
+  subscriptionId?: string | null;
+  sequenceType?: string | null;
+  metadata?: { interval?: Interval } | null;
+};
+
+/**
+ * Process a Mollie payment webhook by id. Branches on sequenceType:
+ *   first     paid -> create the recurring subscription, set plan=paid +
+ *                     planExpiresAt + subscriptionStatus=active.
+ *   recurring paid -> renewal; extend planExpiresAt.
+ *   anything else / not paid -> no-op (Mollie handles dunning + retries).
+ *
+ * Returns a short status string for logging/tests.
+ */
+export async function processPaymentWebhook(
+  mollie: MollieClient,
+  paymentId: string,
+): Promise<string> {
+  const d = db();
+  const payment = (await mollie.payments.get(paymentId)) as unknown as PaymentLike;
+  const customerId = payment.customerId ?? null;
+  if (!customerId) return 'no_customer';
+
+  if (payment.status !== PaymentStatus.paid) {
+    return `ignored_status_${payment.status}`;
+  }
+
+  const seq = payment.sequenceType ?? 'oneoff';
+
+  if (seq === 'first') {
+    const interval: Interval = payment.metadata?.interval ?? 'monthly';
+    const { amount, label } = PRICES[interval];
+
+    // Create the recurring subscription. startDate is the next interval so the
+    // already-charged first payment counts as period 1 (no double charge).
+    const start = new Date();
+    if (interval === 'yearly') start.setUTCFullYear(start.getUTCFullYear() + 1);
+    else start.setUTCMonth(start.getUTCMonth() + 1);
+
+    const sub = await mollie.customerSubscriptions.create({
+      customerId,
+      amount: { currency: 'EUR', value: amount },
+      interval: MOLLIE_INTERVAL[interval],
+      description: label,
+      webhookUrl: webhookUrl(),
+      startDate: start.toISOString().slice(0, 10),
+    });
+
     const updated = await d
       .update(users)
-      .set({ plan: 'paid', updatedAt: new Date() })
+      .set({
+        plan: 'paid',
+        mollieSubscriptionId: sub.id,
+        subscriptionStatus: 'active',
+        planExpiresAt: accessUntil(interval),
+        updatedAt: new Date(),
+      })
       .where(eq(users.mollieCustomerId, customerId))
       .returning({ id: users.id });
-    // Best-effort Discord sync.
-    for (const u of updated) {
-      syncSupporterRole(u.id, true).catch(() => undefined);
-    }
-    return 'paid';
+    for (const u of updated) syncSupporterRole(u.id, true).catch(() => undefined);
+    console.info(`[billing] subscription ${sub.id} active for customer ${customerId}`);
+    return 'subscription_created';
   }
+
+  if (seq === 'recurring') {
+    // Renewal charge succeeded - extend access. Interval is inferred from the
+    // subscription tied to the payment; default monthly if unavailable.
+    let interval: Interval = 'monthly';
+    try {
+      if (payment.subscriptionId) {
+        const sub = (await mollie.customerSubscriptions.get(payment.subscriptionId, {
+          customerId,
+        })) as unknown as { interval?: string };
+        if (sub.interval?.includes('12')) interval = 'yearly';
+      }
+    } catch {
+      // fall back to monthly
+    }
+    await d
+      .update(users)
+      .set({
+        plan: 'paid',
+        subscriptionStatus: 'active',
+        planExpiresAt: accessUntil(interval),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.mollieCustomerId, customerId));
+    console.info(`[billing] renewal for customer ${customerId}, extended access`);
+    return 'renewed';
+  }
+
+  return `ignored_sequence_${seq}`;
+}
+
+// Legacy helper kept for the existing test surface. Delegates to the new path.
+export async function applyPlanFromPayment(
+  mollieClient: MollieClient,
+  paymentId: string,
+): Promise<'paid' | 'no_change' | 'not_found'> {
+  const result = await processPaymentWebhook(mollieClient, paymentId);
+  if (result === 'no_customer') return 'not_found';
+  if (result === 'subscription_created' || result === 'renewed') return 'paid';
   return 'no_change';
 }
 
@@ -271,14 +424,15 @@ export async function applyPlanFromSubscriptionCancel(mollieCustomerId: string):
   const d = db();
   const updated = await d
     .update(users)
-    .set({ plan: 'free', updatedAt: new Date() })
+    .set({
+      plan: 'free',
+      subscriptionStatus: 'expired',
+      mollieSubscriptionId: null,
+      planExpiresAt: null,
+      updatedAt: new Date(),
+    })
     .where(eq(users.mollieCustomerId, mollieCustomerId))
     .returning({ id: users.id });
-  console.info(
-    `[billing] plan set to free for Mollie customer ${mollieCustomerId} (subscription cancelled)`,
-  );
-  // Best-effort Discord sync.
-  for (const u of updated) {
-    syncSupporterRole(u.id, false).catch(() => undefined);
-  }
+  console.info(`[billing] plan set to free for Mollie customer ${mollieCustomerId}`);
+  for (const u of updated) syncSupporterRole(u.id, false).catch(() => undefined);
 }

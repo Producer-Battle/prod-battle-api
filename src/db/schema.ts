@@ -101,6 +101,19 @@ export const users = pgTable(
     // Mollie customer id - set when the user first initiates checkout.
     // Null until then. Used to look up the user in the billing webhook.
     mollieCustomerId: text(),
+    // Mollie subscription id (sub_xxx) - set once the first payment
+    // establishes a mandate and we create the recurring subscription.
+    // Null for free users and one-time legacy supporters.
+    mollieSubscriptionId: text(),
+    // Mirror of the Mollie subscription lifecycle: 'active' while charging,
+    // 'canceled' after the user cancels (plan stays 'paid' until
+    // planExpiresAt), 'expired' once Mollie stops. Null = no subscription.
+    subscriptionStatus: text(),
+    // End of the currently-paid period. While now() < planExpiresAt the
+    // user keeps plan='paid' even after cancelling. The expiration cron
+    // (realtime/tick.ts) demotes to 'free' once this passes and the
+    // subscription is no longer active.
+    planExpiresAt: timestamp({ withTimezone: true }),
     // Honor score 0-100. Drops on abandons, empty submissions, confirmed bad
     // behaviour. Regenerates +1/day on clean play. Gates access to ranked /
     // tournament / private hosting at low values - see middleware/honor.ts.

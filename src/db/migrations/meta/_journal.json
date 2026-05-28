@@ -281,6 +281,13 @@
       "when": 1778400000000,
       "tag": "0039_atlas_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1779500000000,
+      "tag": "0040_recurring_subscriptions",
+      "breakpoints": true
     }
   ]
 }

@@ -1,47 +1,35 @@
-// Unit tests for the Mollie billing webhook handler helpers.
+// Unit tests for the Mollie recurring-billing helpers.
 //
 // Strategy: mock the Mollie API client and the Drizzle DB client so these
-// tests run without any external services. We verify that:
-//   - applyPlanFromPayment sets plan='paid' when status='paid'.
-//   - applyPlanFromPayment is a no-op for non-paid statuses.
-//   - applyPlanFromSubscriptionCancel sets plan='free'.
-//
-// The route handlers themselves are covered at a higher level by the
-// /billing/checkout and /billing/webhook endpoint integration tests (not
-// yet written - those require a real DB and are e2e tests).
+// tests run without external services. We verify:
+//   - processPaymentWebhook on a paid "first" payment creates a subscription
+//     and sets plan=paid + subscriptionStatus=active + planExpiresAt.
+//   - processPaymentWebhook on a paid "recurring" payment extends access.
+//   - non-paid statuses and unknown sequences are no-ops.
+//   - applyPlanFromSubscriptionCancel demotes to free.
 
 import { PaymentStatus } from '@mollie/api-client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// ─── Minimal DB mock ─────────────────────────────────────────────────────────
-//
-// Captures the last update() call so we can assert on plan transitions.
-
-let lastUpdate: { plan?: string; mollieCustomerId?: string } | null = null;
+// Captures the last update().set() values so we can assert plan transitions.
+let lastUpdate: Record<string, unknown> | null = null;
 
 vi.mock('../db/client.js', () => ({
   db: () => ({
     update: (_table: unknown) => ({
-      set: (values: { plan?: string }) => {
+      set: (values: Record<string, unknown>) => {
         lastUpdate = values;
-        return {
-          where: () => ({
-            returning: () => Promise.resolve([]),
-          }),
-        };
+        return { where: () => ({ returning: () => Promise.resolve([{ id: 'user_1' }]) }) };
       },
     }),
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ mollieCustomerId: null }]),
-        }),
+        where: () => ({ limit: () => Promise.resolve([{ mollieCustomerId: null }]) }),
       }),
     }),
   }),
 }));
 
-// Partially mock the schema - only override what we need, keep all real exports.
 vi.mock('../db/schema.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db/schema.js')>();
   return { ...actual };
@@ -60,91 +48,106 @@ vi.mock('../env.js', () => ({
   },
 }));
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
+// Discord role-sync is fire-and-forget; stub it so it never reaches a network.
+vi.mock('../discord/role-sync.js', () => ({
+  syncSupporterRole: vi.fn(() => Promise.resolve()),
+}));
 
-describe('applyPlanFromPayment', () => {
+type MollieMock = Parameters<typeof import('./billing.js').processPaymentWebhook>[0];
+
+describe('processPaymentWebhook - first payment', () => {
   beforeEach(() => {
     lastUpdate = null;
   });
 
-  it('sets plan=paid when payment status is paid', async () => {
+  it('creates a subscription and sets plan=paid on a paid first payment', async () => {
+    const createSub = vi.fn().mockResolvedValue({ id: 'sub_abc' });
     const mockMollie = {
       payments: {
         get: vi.fn().mockResolvedValue({
           status: PaymentStatus.paid,
-          customerId: 'cst_abc123',
+          customerId: 'cst_abc',
+          sequenceType: 'first',
+          metadata: { interval: 'monthly' },
         }),
       },
+      customerSubscriptions: { create: createSub },
     };
 
-    // Dynamic import to pick up the mocks set above.
-    const { applyPlanFromPayment } = await import('./billing.js');
-    const result = await applyPlanFromPayment(
-      mockMollie as unknown as ReturnType<typeof import('@mollie/api-client').createMollieClient>,
-      'tr_paid123',
-    );
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_first');
 
-    expect(result).toBe('paid');
-    expect(lastUpdate).toMatchObject({ plan: 'paid' });
+    expect(result).toBe('subscription_created');
+    expect(createSub).toHaveBeenCalledOnce();
+    expect(lastUpdate).toMatchObject({
+      plan: 'paid',
+      mollieSubscriptionId: 'sub_abc',
+      subscriptionStatus: 'active',
+    });
+    expect(lastUpdate?.planExpiresAt).toBeInstanceOf(Date);
   });
 
-  it('returns no_change when payment status is not paid (cancelled)', async () => {
+  it('no-ops a first payment that is not paid', async () => {
+    const createSub = vi.fn();
     const mockMollie = {
       payments: {
         get: vi.fn().mockResolvedValue({
-          status: PaymentStatus.canceled,
-          customerId: 'cst_abc123',
+          status: PaymentStatus.failed,
+          customerId: 'cst_abc',
+          sequenceType: 'first',
         }),
       },
+      customerSubscriptions: { create: createSub },
     };
-
-    const { applyPlanFromPayment } = await import('./billing.js');
-    const result = await applyPlanFromPayment(
-      mockMollie as unknown as ReturnType<typeof import('@mollie/api-client').createMollieClient>,
-      'tr_canceled456',
-    );
-
-    expect(result).toBe('no_change');
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_failed');
+    expect(result).toBe('ignored_status_failed');
+    expect(createSub).not.toHaveBeenCalled();
     expect(lastUpdate).toBeNull();
   });
+});
 
-  it('returns not_found when payment has no customerId', async () => {
+describe('processPaymentWebhook - recurring renewal', () => {
+  beforeEach(() => {
+    lastUpdate = null;
+  });
+
+  it('extends access on a paid recurring payment', async () => {
     const mockMollie = {
       payments: {
         get: vi.fn().mockResolvedValue({
           status: PaymentStatus.paid,
-          customerId: undefined,
+          customerId: 'cst_abc',
+          sequenceType: 'recurring',
+          subscriptionId: 'sub_abc',
         }),
       },
+      customerSubscriptions: {
+        get: vi.fn().mockResolvedValue({ interval: '1 month' }),
+      },
     };
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_recurring');
+    expect(result).toBe('renewed');
+    expect(lastUpdate).toMatchObject({ plan: 'paid', subscriptionStatus: 'active' });
+    expect(lastUpdate?.planExpiresAt).toBeInstanceOf(Date);
+  });
+});
 
-    const { applyPlanFromPayment } = await import('./billing.js');
-    const result = await applyPlanFromPayment(
-      mockMollie as unknown as ReturnType<typeof import('@mollie/api-client').createMollieClient>,
-      'tr_nocustomer',
-    );
-
-    expect(result).toBe('not_found');
-    expect(lastUpdate).toBeNull();
+describe('processPaymentWebhook - edge cases', () => {
+  beforeEach(() => {
+    lastUpdate = null;
   });
 
-  it('returns no_change when payment status is expired', async () => {
+  it('returns no_customer when payment has no customerId', async () => {
     const mockMollie = {
       payments: {
-        get: vi.fn().mockResolvedValue({
-          status: PaymentStatus.expired,
-          customerId: 'cst_expiredcustomer',
-        }),
+        get: vi.fn().mockResolvedValue({ status: PaymentStatus.paid, customerId: null }),
       },
     };
-
-    const { applyPlanFromPayment } = await import('./billing.js');
-    const result = await applyPlanFromPayment(
-      mockMollie as unknown as ReturnType<typeof import('@mollie/api-client').createMollieClient>,
-      'tr_expired789',
-    );
-
-    expect(result).toBe('no_change');
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_nocust');
+    expect(result).toBe('no_customer');
     expect(lastUpdate).toBeNull();
   });
 });
@@ -154,10 +157,14 @@ describe('applyPlanFromSubscriptionCancel', () => {
     lastUpdate = null;
   });
 
-  it('sets plan=free for the given Mollie customer id', async () => {
+  it('sets plan=free + clears subscription for the customer', async () => {
     const { applyPlanFromSubscriptionCancel } = await import('./billing.js');
-    await applyPlanFromSubscriptionCancel('cst_sub_cancel');
-
-    expect(lastUpdate).toMatchObject({ plan: 'free' });
+    await applyPlanFromSubscriptionCancel('cst_cancel');
+    expect(lastUpdate).toMatchObject({
+      plan: 'free',
+      subscriptionStatus: 'expired',
+      mollieSubscriptionId: null,
+      planExpiresAt: null,
+    });
   });
 });

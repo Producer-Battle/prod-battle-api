@@ -19,6 +19,7 @@ import { sql } from 'drizzle-orm';
 import { bucket, keyFromUrl, s3 } from '../audio/s3.js';
 import { db } from '../db/client.js';
 import { battlePhases, matches } from '../db/schema.js';
+import { syncSupporterRole } from '../discord/role-sync.js';
 import { applyMatchOutcome } from '../honor/outcomes.js';
 import { sendIfOptedIn } from '../mail/gated.js';
 import { notifyShowcaseOpen, notifyTournamentStartIn24h } from '../mail/touchpoints.js';
@@ -1788,6 +1789,42 @@ export async function tournamentStartReminderScan(): Promise<void> {
   }
 }
 
+// Demote lapsed Supporter subscriptions. A user who cancels keeps plan='paid'
+// until plan_expires_at (the period they already paid for). Once that passes
+// and the subscription is no longer active, drop them to 'free' and revoke the
+// Discord role. Also catches subscriptions Mollie stopped paying for (failed
+// renewals that exhausted dunning) since those leave subscription_status not
+// 'active' with an elapsed plan_expires_at.
+let lastSubscriptionExpiryScanAt = 0;
+
+export async function subscriptionExpiryScan(): Promise<void> {
+  const now = Date.now();
+  if (now - lastSubscriptionExpiryScanAt < 60_000) return; // every 60s
+  lastSubscriptionExpiryScanAt = now;
+
+  const d = db();
+  const lapsed = await d.execute<{ id: string }>(
+    sql`UPDATE users
+           SET plan = 'free',
+               subscription_status = 'expired',
+               mollie_subscription_id = NULL,
+               plan_expires_at = NULL,
+               updated_at = now()
+         WHERE plan = 'paid'
+           AND plan_expires_at IS NOT NULL
+           AND plan_expires_at < now()
+           AND (subscription_status IS DISTINCT FROM 'active')
+       RETURNING id`,
+  );
+
+  for (const row of lapsed as Array<{ id: string }>) {
+    console.log(`[billing-expiry] demoted ${row.id} to free (subscription lapsed)`);
+    syncSupporterRole(row.id, false).catch((err: Error) =>
+      console.error(`[billing-expiry] role revoke failed for ${row.id}: ${err.message}`),
+    );
+  }
+}
+
 /**
  * Start the tick loop under leader election.
  * Returns a stop function that terminates the loop.
@@ -1828,6 +1865,9 @@ export function startTickLoop(): () => void {
       );
       tournamentStartReminderScan().catch((err: Error) =>
         console.error('[reminder] error:', err.message),
+      );
+      subscriptionExpiryScan().catch((err: Error) =>
+        console.error('[billing-expiry] error:', err.message),
       );
     }, 1000);
   });
