@@ -354,15 +354,19 @@ export async function processPaymentWebhook(
     // same first-payment event more than once. Without this guard the second
     // delivery tries to create a duplicate subscription, Mollie returns
     // "a subscription with the same description already exists", we 400, and
-    // Mollie retries forever. If this customer already has a subscription on
-    // file, treat the event as already-processed.
+    // Mollie retries forever.
+    //
+    // We only short-circuit when the existing subscription is ACTIVE - a
+    // cancelled-but-not-yet-expired user (subscriptionStatus='canceled',
+    // subId still set until the expiry cron clears it) must be able to
+    // resubscribe, so we let them fall through to create a fresh one.
     const [existing] = await d
-      .select({ subId: users.mollieSubscriptionId })
+      .select({ subId: users.mollieSubscriptionId, subStatus: users.subscriptionStatus })
       .from(users)
       .where(eq(users.mollieCustomerId, customerId))
       .limit(1);
-    if (existing?.subId) {
-      console.info(`[billing] first payment for ${customerId} already has subscription, skipping`);
+    if (existing?.subId && existing.subStatus === 'active') {
+      console.info(`[billing] first payment for ${customerId} already active, skipping`);
       return 'already_subscribed';
     }
 

@@ -63,8 +63,8 @@ describe('processPaymentWebhook - first payment', () => {
     selectResult = [{ mollieCustomerId: null }];
   });
 
-  it('is idempotent: skips creation if the customer already has a subscription', async () => {
-    selectResult = [{ subId: 'sub_existing' }];
+  it('is idempotent: skips creation if the customer already has an ACTIVE subscription', async () => {
+    selectResult = [{ subId: 'sub_existing', subStatus: 'active' }];
     const createSub = vi.fn();
     const mockMollie = {
       payments: {
@@ -82,6 +82,49 @@ describe('processPaymentWebhook - first payment', () => {
     expect(result).toBe('already_subscribed');
     expect(createSub).not.toHaveBeenCalled();
     expect(lastUpdate).toBeNull();
+  });
+
+  it('lets a cancelled (not-yet-expired) user resubscribe', async () => {
+    // subId still set but status=canceled -> must create a fresh subscription.
+    selectResult = [{ subId: 'sub_old', subStatus: 'canceled' }];
+    const createSub = vi.fn().mockResolvedValue({ id: 'sub_new' });
+    const mockMollie = {
+      payments: {
+        get: vi.fn().mockResolvedValue({
+          status: PaymentStatus.paid,
+          customerId: 'cst_abc',
+          sequenceType: 'first',
+          metadata: { interval: 'monthly' },
+        }),
+      },
+      customerSubscriptions: { create: createSub },
+    };
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_resub');
+    expect(result).toBe('subscription_created');
+    expect(createSub).toHaveBeenCalledOnce();
+    expect(lastUpdate).toMatchObject({ plan: 'paid', mollieSubscriptionId: 'sub_new' });
+  });
+
+  it('treats Mollie "already exists" create error as success (200, no retry loop)', async () => {
+    selectResult = [{ subId: null, subStatus: null }];
+    const createSub = vi
+      .fn()
+      .mockRejectedValue(new Error('A subscription with the same description already exists'));
+    const mockMollie = {
+      payments: {
+        get: vi.fn().mockResolvedValue({
+          status: PaymentStatus.paid,
+          customerId: 'cst_orphan',
+          sequenceType: 'first',
+          metadata: { interval: 'monthly' },
+        }),
+      },
+      customerSubscriptions: { create: createSub },
+    };
+    const { processPaymentWebhook } = await import('./billing.js');
+    const result = await processPaymentWebhook(mockMollie as unknown as MollieMock, 'tr_dupe2');
+    expect(result).toBe('already_subscribed');
   });
 
   it('creates a subscription and sets plan=paid on a paid first payment', async () => {
