@@ -123,34 +123,54 @@ billingRoutes.openapi(checkoutRoute, async (c) => {
 
   // Resolve or create the Mollie customer so payments + mandates + the
   // subscription all attach to one identity.
-  let mollieCustomerId = row?.mollieCustomerId ?? null;
-  if (!mollieCustomerId) {
+  const freshCustomer = async (): Promise<string> => {
     const customer = await mollie.customers.create({
       name: user.handle ?? undefined,
       email: user.email,
       metadata: { userId: user.id },
     });
-    mollieCustomerId = customer.id;
     await d
       .update(users)
-      .set({ mollieCustomerId, updatedAt: new Date() })
+      .set({ mollieCustomerId: customer.id, updatedAt: new Date() })
       .where(eq(users.id, user.id));
-  }
+    return customer.id;
+  };
+
+  let mollieCustomerId = row?.mollieCustomerId ?? (await freshCustomer());
 
   const { amount, label } = PRICES[interval];
 
   // A "first" sequence payment establishes a reusable mandate when it's paid.
   // We create the recurring subscription in the webhook once the mandate
   // exists. metadata.interval is read back there to size the subscription.
-  const payment = await mollie.payments.create({
-    amount: { currency: 'EUR', value: amount },
-    customerId: mollieCustomerId,
-    sequenceType: SequenceType.first,
-    description: label,
-    redirectUrl: `${webBase()}/settings?billing=success`,
-    webhookUrl: webhookUrl(),
-    metadata: { userId: user.id, interval },
-  });
+  const makePayment = (customerId: string) =>
+    mollie.payments.create({
+      amount: { currency: 'EUR', value: amount },
+      customerId,
+      sequenceType: SequenceType.first,
+      description: label,
+      redirectUrl: `${webBase()}/settings?billing=success`,
+      webhookUrl: webhookUrl(),
+      metadata: { userId: user.id, interval },
+    });
+
+  let payment: Awaited<ReturnType<typeof makePayment>>;
+  try {
+    payment = await makePayment(mollieCustomerId);
+  } catch (err) {
+    // A stored customer created in a different API mode (the classic
+    // test->live switch) makes Mollie reject it: "Customer ... exists, but
+    // the wrong mode is used" / 404. Mint a fresh customer in the current
+    // mode and retry once.
+    const msg = (err as Error).message?.toLowerCase() ?? '';
+    if (msg.includes('wrong mode') || msg.includes('not found') || msg.includes('customer')) {
+      console.warn('[billing] stale Mollie customer, recreating:', (err as Error).message);
+      mollieCustomerId = await freshCustomer();
+      payment = await makePayment(mollieCustomerId);
+    } else {
+      throw err;
+    }
+  }
 
   // Prefer the typed accessor; fall back to the HAL link if the SDK's
   // overloaded return type hides it from TS.
