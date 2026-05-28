@@ -216,11 +216,29 @@ jobs:
         id: wait
         env:
           CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
+          EXPECT_VERSION: ${{ needs.meta.outputs.primary_tag }}
         run: |
           # Poll for up to 5 minutes. Scaleway transitions: pending -> ready (ok)
           # or pending -> error (bad). Scaleway is known to flap between pending
           # and "internal error" during the first ~10s of a PATCH - so only fail
           # after we've seen `error` persist across 3 consecutive polls (~15s).
+          #
+          # Scaleway also chronically leaves status stuck on `pending` long after
+          # the new revision is actually serving traffic. That control-plane lag
+          # is NOT a deploy failure - so we treat the source of truth as the app
+          # itself: if /health returns 200 with the version we just shipped, the
+          # deploy succeeded regardless of what the status field says.
+          DOMAIN=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
+            "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.domain_name')
+          echo "Container domain: ${DOMAIN} (expecting version ${EXPECT_VERSION})"
+
+          serving_new() {
+            [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && return 1
+            local v
+            v=$(curl -s --max-time 5 "https://${DOMAIN}/health" | jq -r '.version // ""' 2>/dev/null)
+            [[ "$v" == "$EXPECT_VERSION" ]]
+          }
+
           error_streak=0
           for i in $(seq 1 60); do
             BODY=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
@@ -229,6 +247,12 @@ jobs:
             ERR=$(echo "$BODY" | jq -r '.error_message // ""')
             echo "[$i/60] status=${STATUS} err=${ERR}"
             if [[ "$STATUS" == "ready" ]]; then
+              echo "result=ready" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Status field lags - if the new revision is already serving, accept it.
+            if serving_new; then
+              echo "Status is '${STATUS}' but /health reports version ${EXPECT_VERSION} - new revision is serving."
               echo "result=ready" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -244,8 +268,14 @@ jobs:
             fi
             sleep 5
           done
+          # Final check: even if status never flipped, a serving new revision wins.
+          if serving_new; then
+            echo "Status never reached 'ready' but /health reports version ${EXPECT_VERSION} - accepting deploy."
+            echo "result=ready" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "result=timeout" >> "$GITHUB_OUTPUT"
-          echo "::error::Container did not reach 'ready' within 5 minutes"
+          echo "::error::Container did not reach 'ready' within 5 minutes and /health never reported version ${EXPECT_VERSION}"
           exit 1
 
       - name: Smoke-test /health
