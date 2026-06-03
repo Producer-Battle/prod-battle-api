@@ -13,12 +13,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # During the Kapsule cutover (2026-06-03) we push the SAME image to both
-  # registries. The old Scaleway redeploy job keeps the legacy serverless
-  # container in sync as a fallback; the new k8s-deploy job rolls the K8s
-  # Deployment. After the soak succeeds, REGISTRY + the old redeploy job
-  # are deleted in a follow-up - and we're left with ghcr only.
-  REGISTRY: rg.fr-par.scw.cloud/prod-battle-registry
+  # ghcr.io only. Scaleway registry retired 2026-06-03 along with the
+  # serverless container path - it was throwing 502 / EOF on push during
+  # the migration and gating the whole workflow.
   REGISTRY_GHCR: ghcr.io/producer-battle
   IMAGE_NAME: prod-battle-api
 
@@ -59,13 +56,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Scaleway Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: nologin
-          password: ${{ secrets.SCW_SECRET_KEY }}
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -73,7 +63,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push API image (both registries)
+      - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -81,21 +71,17 @@ jobs:
           build-args: |
             APP_VERSION=${{ needs.meta.outputs.primary_tag }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push ffmpeg job image (both registries)
+      - name: Build and push ffmpeg job image
         uses: docker/build-push-action@v6
         with:
           context: ./jobs/ffmpeg
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.primary_tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.secondary_tag }}
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.primary_tag }}
             ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.secondary_tag }}
           cache-from: type=gha
@@ -238,187 +224,3 @@ jobs:
           echo "::error::api-k8s.prodbattle.com /health did not report ${{ needs.meta.outputs.primary_tag }} within 60s"
           cat /tmp/health.txt || true
           exit 1
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # LEGACY Scaleway Serverless Container deploy. Marked continue-on-error so
-  # a flap here doesn't block the K8s deploy from being the source of truth.
-  # Deleted entirely after the post-cutover soak passes.
-  # ─────────────────────────────────────────────────────────────────────────────
-  redeploy:
-    needs: [meta, build, migrate]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-    env:
-      SCW_API_BASE: https://api.scaleway.com/containers/v1beta1/regions/fr-par/containers
-    steps:
-      # Job-level `env` can reference neither `secrets.*` nor `env.*`, so we
-      # compute the container ID and the full image ref here and expose them
-      # as step outputs for the later steps (roll, wait, smoke-test, rollback).
-      - name: Pick container ID + image
-        id: guard
-        env:
-          CONTAINER_ID: ${{ secrets.SCW_CONTAINER_ID }}
-          PRIMARY_TAG: ${{ needs.meta.outputs.primary_tag }}
-        run: |
-          if [[ -z "$CONTAINER_ID" ]]; then
-            echo "SCW_CONTAINER_ID secret not set - skipping redeploy."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "container_id=${CONTAINER_ID}" >> "$GITHUB_OUTPUT"
-            echo "full_image=${REGISTRY}/${IMAGE_NAME}:${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Capture current image for rollback
-        if: steps.guard.outputs.skip != 'true'
-        id: prev
-        env:
-          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
-        run: |
-          PREV=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-            "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.registry_image')
-          echo "Previous image: ${PREV}"
-          echo "image=${PREV}" >> "$GITHUB_OUTPUT"
-
-      - name: Roll container to ${{ needs.meta.outputs.primary_tag }}
-        if: steps.guard.outputs.skip != 'true'
-        env:
-          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
-          FULL_IMAGE: ${{ steps.guard.outputs.full_image }}
-        run: |
-          echo "Rolling container ${CONTAINER_ID} to: ${FULL_IMAGE}"
-          # Scaleway returns 409 "resource is in a transient state" when a
-          # previous PATCH is still being processed. Retry with backoff up to
-          # ~3 minutes before giving up.
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            HTTP_STATUS=$(curl --silent --output /tmp/scw_response.json --write-out "%{http_code}" \
-              --request PATCH \
-              --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-              --header "Content-Type: application/json" \
-              --data "$(jq -nc --arg img "$FULL_IMAGE" '{registry_image: $img, redeploy: true}')" \
-              "${SCW_API_BASE}/${CONTAINER_ID}")
-            echo "[attempt ${attempt}/10] HTTP ${HTTP_STATUS}"
-            cat /tmp/scw_response.json
-            echo
-            if [[ "${HTTP_STATUS}" -ge 200 && "${HTTP_STATUS}" -lt 300 ]]; then
-              exit 0
-            fi
-            if [[ "${HTTP_STATUS}" == "409" ]]; then
-              echo "Transient 409 - waiting 20s before retrying..."
-              sleep 20
-              continue
-            fi
-            echo "::error::Scaleway PATCH returned non-retryable ${HTTP_STATUS}"
-            exit 1
-          done
-          echo "::error::Scaleway PATCH still 409 after 10 attempts (~3 min)"
-          exit 1
-
-      - name: Wait for container to become ready
-        if: steps.guard.outputs.skip != 'true'
-        id: wait
-        env:
-          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
-          EXPECT_VERSION: ${{ needs.meta.outputs.primary_tag }}
-        run: |
-          # Poll for up to 5 minutes. Scaleway transitions: pending -> ready (ok)
-          # or pending -> error (bad). Scaleway is known to flap between pending
-          # and "internal error" during the first ~10s of a PATCH - so only fail
-          # after we've seen `error` persist across 3 consecutive polls (~15s).
-          #
-          # Scaleway also chronically leaves status stuck on `pending` long after
-          # the new revision is actually serving traffic. That control-plane lag
-          # is NOT a deploy failure - so we treat the source of truth as the app
-          # itself: if /health returns 200 with the version we just shipped, the
-          # deploy succeeded regardless of what the status field says.
-          DOMAIN=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-            "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.domain_name')
-          echo "Container domain: ${DOMAIN} (expecting version ${EXPECT_VERSION})"
-
-          serving_new() {
-            [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && return 1
-            local v
-            v=$(curl -s --max-time 5 "https://${DOMAIN}/health" | jq -r '.version // ""' 2>/dev/null)
-            [[ "$v" == "$EXPECT_VERSION" ]]
-          }
-
-          error_streak=0
-          for i in $(seq 1 60); do
-            BODY=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-              "${SCW_API_BASE}/${CONTAINER_ID}")
-            STATUS=$(echo "$BODY" | jq -r '.status')
-            ERR=$(echo "$BODY" | jq -r '.error_message // ""')
-            echo "[$i/60] status=${STATUS} err=${ERR}"
-            if [[ "$STATUS" == "ready" ]]; then
-              echo "result=ready" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # Status field lags - if the new revision is already serving, accept it.
-            if serving_new; then
-              echo "Status is '${STATUS}' but /health reports version ${EXPECT_VERSION} - new revision is serving."
-              echo "result=ready" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [[ "$STATUS" == "error" ]]; then
-              error_streak=$((error_streak + 1))
-              if [[ $error_streak -ge 3 ]]; then
-                echo "result=error" >> "$GITHUB_OUTPUT"
-                echo "::error::Scaleway container failed to deploy (3 consecutive errors): ${ERR}"
-                exit 1
-              fi
-            else
-              error_streak=0
-            fi
-            sleep 5
-          done
-          # Final check: even if status never flipped, a serving new revision wins.
-          if serving_new; then
-            echo "Status never reached 'ready' but /health reports version ${EXPECT_VERSION} - accepting deploy."
-            echo "result=ready" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "result=timeout" >> "$GITHUB_OUTPUT"
-          echo "::error::Container did not reach 'ready' within 5 minutes and /health never reported version ${EXPECT_VERSION}"
-          exit 1
-
-      - name: Smoke-test /health
-        if: steps.wait.outputs.result == 'ready'
-        env:
-          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
-        run: |
-          URL=$(curl -s --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-            "${SCW_API_BASE}/${CONTAINER_ID}" | jq -r '.domain_name')
-          echo "Hitting https://${URL}/health"
-          for i in $(seq 1 12); do
-            CODE=$(curl -s -o /tmp/health.txt -w "%{http_code}" "https://${URL}/health")
-            echo "[$i/12] HTTP ${CODE}"
-            if [[ "$CODE" == "200" ]]; then
-              cat /tmp/health.txt
-              echo ""
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "::error::Health check did not return 200 within 60s"
-          cat /tmp/health.txt || true
-          exit 1
-
-      - name: Roll back to previous image on failure
-        if: failure() && steps.guard.outputs.skip != 'true' && steps.prev.outputs.image != '' && steps.prev.outputs.image != 'null'
-        env:
-          CONTAINER_ID: ${{ steps.guard.outputs.container_id }}
-          PREV: ${{ steps.prev.outputs.image }}
-          FULL_IMAGE: ${{ steps.guard.outputs.full_image }}
-        run: |
-          echo "::warning::Deploy failed - rolling ${CONTAINER_ID} back to ${PREV}"
-          curl -s --output /tmp/rollback.json --write-out "HTTP %{http_code}\n" \
-            --request PATCH \
-            --header "X-Auth-Token: ${{ secrets.SCW_SECRET_KEY }}" \
-            --header "Content-Type: application/json" \
-            --data "$(jq -nc --arg img "$PREV" '{registry_image: $img, redeploy: true}')" \
-            "${SCW_API_BASE}/${CONTAINER_ID}"
-          cat /tmp/rollback.json
-          echo ""
-          echo "::warning::Rollback PATCH sent. Investigate the failing image (${FULL_IMAGE}) before the next deploy."
