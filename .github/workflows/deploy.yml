@@ -13,7 +13,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # During the Kapsule cutover (2026-06-03) we push the SAME image to both
+  # registries. The old Scaleway redeploy job keeps the legacy serverless
+  # container in sync as a fallback; the new k8s-deploy job rolls the K8s
+  # Deployment. After the soak succeeds, REGISTRY + the old redeploy job
+  # are deleted in a follow-up - and we're left with ghcr only.
   REGISTRY: rg.fr-par.scw.cloud/prod-battle-registry
+  REGISTRY_GHCR: ghcr.io/producer-battle
   IMAGE_NAME: prod-battle-api
 
 jobs:
@@ -46,6 +52,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      packages: write # ghcr.io push via GITHUB_TOKEN
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +66,14 @@ jobs:
           username: nologin
           password: ${{ secrets.SCW_SECRET_KEY }}
 
-      - name: Build and push API image
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image (both registries)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,10 +83,12 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.primary_tag }}
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ needs.meta.outputs.secondary_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push ffmpeg job image
+      - name: Build and push ffmpeg job image (both registries)
         uses: docker/build-push-action@v6
         with:
           context: ./jobs/ffmpeg
@@ -80,6 +96,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.primary_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.secondary_tag }}
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.primary_tag }}
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}-ffmpeg:${{ needs.meta.outputs.secondary_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -140,9 +158,96 @@ jobs:
   # the container so the next `tofu apply` doesn't fight CI by resetting
   # the image back to the tag literal in envs/prod/main.tf.
   # ─────────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Roll the K8s Deployment to the new SHA. This is the NEW deploy path -
+  # post-cutover it's the only one that runs.
+  # ─────────────────────────────────────────────────────────────────────────────
+  k8s-deploy:
+    needs: [meta, build, migrate]
+    runs-on: ubuntu-latest
+    # `production` GH environment gates KUBECONFIG + sensitive vars to
+    # this job only. Configure secrets on the environment, not the repo.
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Guard - check KUBECONFIG is set
+        id: guard
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+        run: |
+          if [[ -z "$KUBECONFIG_B64" ]]; then
+            echo "::warning::KUBECONFIG secret not set on the production env - skipping K8s deploy until cutover starts."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install kubectl
+        if: steps.guard.outputs.skip != 'true'
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+
+      - name: Write kubeconfig
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+        run: |
+          mkdir -p ~/.kube
+          # Accept either raw kubeconfig or base64-encoded.
+          if echo "$KUBECONFIG_B64" | base64 -d 2>/dev/null | grep -q "apiVersion"; then
+            echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
+          else
+            printf '%s' "$KUBECONFIG_B64" > ~/.kube/config
+          fi
+          chmod 600 ~/.kube/config
+          kubectl version --client
+          kubectl get nodes
+
+      - name: Set new image and wait for rollout
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          SHA: ${{ needs.meta.outputs.primary_tag }}
+        run: |
+          IMG="${REGISTRY_GHCR}/${IMAGE_NAME}:${SHA}"
+          echo "Rolling deployment/api -> $IMG"
+          kubectl -n app set image deployment/api api="$IMG"
+          kubectl -n app rollout status deployment/api --timeout=300s
+
+      - name: Smoke-test /health on api-k8s.prodbattle.com
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          # During cutover api-k8s.prodbattle.com points at the cluster.
+          # Post-cutover this stays as a stable second hostname for the
+          # CI smoke test (keeps the test independent of the live host).
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o /tmp/health.txt -w "%{http_code}" https://api-k8s.prodbattle.com/health || true)
+            echo "[$i/12] HTTP ${CODE}"
+            if [[ "$CODE" == "200" ]]; then
+              cat /tmp/health.txt; echo
+              VERSION=$(jq -r '.version' < /tmp/health.txt)
+              if [[ "$VERSION" == "${{ needs.meta.outputs.primary_tag }}" ]]; then
+                echo "OK - cluster is serving ${VERSION}"
+                exit 0
+              fi
+              echo "Wrong version yet: ${VERSION}"
+            fi
+            sleep 5
+          done
+          echo "::error::api-k8s.prodbattle.com /health did not report ${{ needs.meta.outputs.primary_tag }} within 60s"
+          cat /tmp/health.txt || true
+          exit 1
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LEGACY Scaleway Serverless Container deploy. Marked continue-on-error so
+  # a flap here doesn't block the K8s deploy from being the source of truth.
+  # Deleted entirely after the post-cutover soak passes.
+  # ─────────────────────────────────────────────────────────────────────────────
   redeploy:
     needs: [meta, build, migrate]
     runs-on: ubuntu-latest
+    continue-on-error: true
     permissions:
       contents: read
     env:
