@@ -34,17 +34,65 @@ function parseUserId(url: string | undefined): string | null {
   return null;
 }
 
-/** Ensure a user row exists (guest stub - real auth agent will replace). */
-async function ensureGuestUser(handle: string): Promise<string> {
+/** Parse the pb_anon cookie off a raw upgrade request, if present. */
+function parseAnonId(req: IncomingMessage): string | null {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === 'pb_anon') {
+      const v = part.slice(eq + 1).trim();
+      return v.length > 0 ? decodeURIComponent(v) : null;
+    }
+  }
+  return null;
+}
+
+// Resolve the WS caller to a users.id - same rules as the HTTP routes
+// (see routes/room-actions.ts resolveUser): the pb_anon cookie is the
+// credential; the ?user= handle is a display preference. Returns null
+// when the caller tried to act as an identity that isn't theirs.
+//
+// The upgrade request rides the browser's normal cookie jar, so pb_anon
+// is present for any client that touched the HTTP API first (the SPA
+// always has). Cookie-less callers can still create fresh guests or
+// claim legacy unbound guest stubs, but never bound or registered rows.
+async function ensureGuestUser(handle: string, anonId: string | null): Promise<string | null> {
   const d = db();
+
+  const byHandleRows = await d.execute<{ id: string; anon_id: string | null; email: string }>(
+    sql`SELECT id, anon_id, email FROM users WHERE handle = ${handle || 'guest'} LIMIT 1`,
+  );
+  const byHandle = byHandleRows[0] as
+    | { id: string; anon_id: string | null; email: string }
+    | undefined;
+
+  if (byHandle) {
+    // Already bound to this cookie: it's theirs.
+    if (byHandle.anon_id != null && byHandle.anon_id === anonId) return byHandle.id;
+    // Bound to someone else's cookie: reject rather than impersonate.
+    if (byHandle.anon_id != null) return null;
+    // anon_id NULL: claimable only if it's a legacy guest stub. Real
+    // registered accounts (non-guest email) are never resolvable by
+    // handle - only via an authenticated session.
+    if (!byHandle.email.endsWith('@guest.local')) return null;
+    if (anonId) {
+      await d.execute(sql`UPDATE users SET anon_id = ${anonId} WHERE id = ${byHandle.id}`);
+    }
+    return byHandle.id;
+  }
+
   const rows = await d.execute<{ id: string }>(
-    sql`INSERT INTO users (id, email, handle, role)
-        VALUES (gen_random_uuid(), ${handle || 'guest'} || '@guest.local', ${handle || 'guest'}, 'producer')
-        ON CONFLICT (handle) DO UPDATE SET handle = EXCLUDED.handle
+    sql`INSERT INTO users (id, email, handle, role, anon_id)
+        VALUES (gen_random_uuid(), ${handle || 'guest'} || '@guest.local', ${handle || 'guest'}, 'producer', ${anonId})
+        ON CONFLICT (handle) DO NOTHING
         RETURNING id`,
   );
   const row = rows[0] as { id: string } | undefined;
-  return row?.id ?? randomUUID();
+  // ON CONFLICT fired: a concurrent request claimed the handle. Reject -
+  // the client reconnects and resolves through the byHandle path.
+  return row?.id ?? null;
 }
 
 /** Find match by roomCode. */
@@ -190,10 +238,16 @@ export function attachWebSocket(server: Server): void {
           return;
         }
 
-        // Resolve player identity: ?user= or a generated guest id.
+        // Resolve player identity: ?user= or a generated guest id. The
+        // pb_anon cookie (set by the HTTP API) authenticates guests; a
+        // handle bound to someone else closes with 4003.
         const rawUser = parseUserId(url);
         const handle = rawUser ?? `guest-${randomUUID().slice(0, 8)}`;
-        const userId = await ensureGuestUser(handle);
+        const userId = await ensureGuestUser(handle, parseAnonId(req));
+        if (!userId) {
+          ws.close(4003, 'identity not yours');
+          return;
+        }
 
         // Seat the player.
         await seatPlayer(match.id, userId);

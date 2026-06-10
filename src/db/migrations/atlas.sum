@@ -1,4 +1,4 @@
-h1:wc+0CPzxI3nKicK65sggtaZGeP2nP93zYG79pFwO/Gc=
+h1:SVcWuVXaCxQlcI6h+h5oZgaTXMz7MuzNEibLmsPJQVM=
 0000_material_patriot.sql h1:CypHmpmK/awY6UduUqvWGHhbsgv7IFIENgRPAElLU7k=
 0001_secret_magneto.sql h1:zxWhmoFVPlpZxgyvujbLij8GRMJL50C9USJKMjoNZT8=
 0002_giant_bedlam.sql h1:4GV8p5LRj/apmO+qhyNWIOPJWlrTxEGiVNElbwpsFw4=
@@ -40,3 +40,4 @@ h1:wc+0CPzxI3nKicK65sggtaZGeP2nP93zYG79pFwO/Gc=
 0038_wasabi_url_rewrite.sql h1:2qxZ8801dnubGDFgY7Swpb5dTqOqG//rrvrReyTD7/g=
 0039_atlas_marker.sql h1:8xLNtIFPaeFIq0JhceWZbOuU1D24uFoUeKzc0nk+5H0=
 0040_recurring_subscriptions.sql h1:CnbxsQu0zUXHtLvW22F9JyhGP87Khzx0/8a8AT90ypk=
+0041_anon_id_drop_unique.sql h1:SnVCV+ShtBssVJZHDuBY1v1VhDyD4TK3xxT+ZfQjRjw=

@@ -7,11 +7,24 @@
 // Nothing here depends on real services, so the tests run anywhere Node +
 // Postgres are available.
 
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 
 vi.mock('ioredis', () => {
   class FakeRedis {
     private store = new Map<string, number>();
+    constructor() {
+      // Register every instance so the beforeEach below can wipe rate-limit
+      // counters between tests. Needed since the harness cookie jar landed:
+      // one test app now presents ONE stable pb_anon identity, so counters
+      // like rl:match:create:<anonId> accumulate across tests in a file and
+      // trip the 3-matches/day free-tier limit.
+      const g = globalThis as unknown as { __fakeRedisInstances?: Set<FakeRedis> };
+      g.__fakeRedisInstances ??= new Set();
+      g.__fakeRedisInstances.add(this);
+    }
+    __reset() {
+      this.store.clear();
+    }
     on() {
       return this;
     }
@@ -69,3 +82,9 @@ vi.mock('ioredis', () => {
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: vi.fn(async () => 'https://s3.fake/signed?sig=test'),
 }));
+
+// Wipe FakeRedis counters between tests (see the constructor note above).
+beforeEach(() => {
+  const g = globalThis as unknown as { __fakeRedisInstances?: Set<{ __reset(): void }> };
+  for (const r of g.__fakeRedisInstances ?? []) r.__reset();
+});

@@ -288,6 +288,13 @@
       "when": 1779500000000,
       "tag": "0040_recurring_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1780000000000,
+      "tag": "0041_anon_id_drop_unique",
+      "breakpoints": true
     }
   ]
 }

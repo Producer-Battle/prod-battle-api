@@ -33,6 +33,40 @@ export type BuildTestAppOptions = {
   };
 };
 
+// WeakMap keyed on the test app so multiple buildTestApp calls in one
+// test file each get their own cookie jar. Mirrors how a real browser
+// keeps cookies per origin/profile.
+const cookieJars = new WeakMap<OpenAPIHono, Map<string, string>>();
+
+function jarFor(app: OpenAPIHono): Map<string, string> {
+  let jar = cookieJars.get(app);
+  if (!jar) {
+    jar = new Map();
+    cookieJars.set(app, jar);
+  }
+  return jar;
+}
+
+function jarToCookieHeader(jar: Map<string, string>): string {
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+function ingestSetCookie(jar: Map<string, string>, res: Response): void {
+  // Hono returns Set-Cookie via res.headers.getSetCookie() in Node 20+.
+  // Fall back to the single-header form for older runtimes.
+  const single = res.headers.get('set-cookie');
+  const setCookies =
+    (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.() ??
+    (single ? [single] : []);
+  for (const sc of setCookies) {
+    const [pair] = sc.split(';');
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+  }
+}
+
 export function buildTestApp(opts: BuildTestAppOptions = {}): OpenAPIHono {
   const app = new OpenAPIHono();
   app.use('*', anonId());
@@ -53,12 +87,27 @@ export function buildTestApp(opts: BuildTestAppOptions = {}): OpenAPIHono {
 
 type JsonBody = Record<string, unknown> | unknown[];
 
+async function requestWithJar(
+  app: OpenAPIHono,
+  path: string,
+  init: RequestInit,
+): Promise<Response> {
+  const jar = jarFor(app);
+  const headers = new Headers(init.headers);
+  if (jar.size > 0 && !headers.has('cookie')) {
+    headers.set('cookie', jarToCookieHeader(jar));
+  }
+  const res = await app.request(path, { ...init, headers });
+  ingestSetCookie(jar, res);
+  return res;
+}
+
 export async function postJson<T = unknown>(
   app: OpenAPIHono,
   path: string,
   body?: JsonBody,
 ): Promise<{ status: number; json: T }> {
-  const res = await app.request(path, {
+  const res = await requestWithJar(app, path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -71,7 +120,7 @@ export async function getJson<T = unknown>(
   app: OpenAPIHono,
   path: string,
 ): Promise<{ status: number; json: T }> {
-  const res = await app.request(path);
+  const res = await requestWithJar(app, path, {});
   const json = (await res.json().catch(() => ({}))) as T;
   return { status: res.status, json };
 }
@@ -81,7 +130,7 @@ export async function patchJson<T = unknown>(
   path: string,
   body?: JsonBody,
 ): Promise<{ status: number; json: T }> {
-  const res = await app.request(path, {
+  const res = await requestWithJar(app, path, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),

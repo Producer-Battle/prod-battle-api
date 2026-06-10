@@ -155,21 +155,44 @@ phasesRoutes.openapi(voteRoute, async (c) => {
     return c.json({ error: `match not in vote phase (status=${m.status})` }, 400);
   }
 
-  // Auto-create a lightweight user row so external/audience voters from
-  // the /vote page can cast a vote even if they never joined the match
-  // via WS. Self-vote is still blocked below by checking submission.user_id.
-  const existing = await d.select().from(users).where(eq(users.handle, body.user)).limit(1);
-  let u = existing[0];
-  if (!u) {
-    const inserted = await d.execute<{ id: string }>(
-      sql`INSERT INTO users (id, email, handle, role)
-            VALUES (gen_random_uuid(), ${body.user} || '@guest.local', ${body.user}, 'producer')
-            ON CONFLICT (handle) DO UPDATE SET handle = EXCLUDED.handle
-            RETURNING id`,
-    );
-    const row = inserted[0] as { id: string } | undefined;
-    if (row) {
-      [u] = await d.select().from(users).where(eq(users.id, row.id)).limit(1);
+  // Resolve the voter. Authenticated session wins. For guest voters the
+  // pb_anon HttpOnly cookie is the credential and body.user is just the
+  // display handle: a handle bound to a DIFFERENT cookie is rejected -
+  // otherwise any visitor could vote-as-anyone by sending their handle.
+  // Legacy guest stubs (anon_id NULL + @guest.local email) are claimed
+  // for this cookie on first touch; real registered accounts are never
+  // resolvable by handle.
+  let u: typeof users.$inferSelect | undefined;
+  if (c.var.user) {
+    [u] = await d.select().from(users).where(eq(users.id, c.var.user.id)).limit(1);
+  } else {
+    const [byHandle] = await d.select().from(users).where(eq(users.handle, body.user)).limit(1);
+    if (byHandle) {
+      if (byHandle.anonId != null && byHandle.anonId !== c.var.anonId) {
+        return c.json({ error: 'forbidden' }, 403);
+      }
+      if (byHandle.anonId == null) {
+        if (!byHandle.email.endsWith('@guest.local')) {
+          return c.json({ error: 'forbidden' }, 403);
+        }
+        await d.update(users).set({ anonId: c.var.anonId }).where(eq(users.id, byHandle.id));
+      }
+      u = byHandle;
+    } else {
+      // Brand-new audience voter. Insert tied to the anon_id cookie.
+      const inserted = await d.execute<{ id: string }>(
+        sql`INSERT INTO users (id, email, handle, role, anon_id)
+              VALUES (gen_random_uuid(), ${body.user} || '@guest.local', ${body.user}, 'producer', ${c.var.anonId})
+              ON CONFLICT (handle) DO NOTHING
+              RETURNING id`,
+      );
+      const row = inserted[0] as { id: string } | undefined;
+      if (row) {
+        [u] = await d.select().from(users).where(eq(users.id, row.id)).limit(1);
+      } else {
+        // Race: someone else just claimed the handle. Treat as forbidden.
+        return c.json({ error: 'handle_taken' }, 409);
+      }
     }
   }
   if (!u) return c.json({ error: 'user not found' }, 404);

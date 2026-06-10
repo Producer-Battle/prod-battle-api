@@ -94,6 +94,13 @@ export const users = pgTable(
     // The e2e seed helper explicitly sets this to true for test users.
     emailVerified: boolean().notNull().default(false),
     handle: text().notNull(),
+    // Server-issued HttpOnly cookie value (pb_anon, set by middleware/anon-id).
+    // For guest users this is the actual credential: the handle is public and
+    // impersonable, the anon_id is unpredictable. Resolution prefers
+    // anon_id over handle when present. NULL for users created before this
+    // column existed - those records still resolve by handle for backwards
+    // compatibility, and the anon_id is filled in lazily on next interaction.
+    anonId: uuid('anon_id'),
     role: userRole().notNull().default('producer'),
     plan: userPlan().notNull().default('free'),
     status: userStatus().notNull().default('active'),

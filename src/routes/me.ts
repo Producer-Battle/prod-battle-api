@@ -581,6 +581,7 @@ meRoutes.openapi(claimGuestHandleRoute, async (c) => {
       id: users.id,
       email: users.email,
       status: users.status,
+      anonId: users.anonId,
     })
     .from(users)
     .where(eq(users.handle, normalised))
@@ -614,6 +615,22 @@ meRoutes.openapi(claimGuestHandleRoute, async (c) => {
     return c.json(
       { error: 'guest_not_found', message: `No active user found with handle "${normalised}".` },
       404,
+    );
+  }
+
+  // If the guest row is bound to a pb_anon cookie, only the browser that
+  // holds that cookie may claim it. Without this, anyone who knows a
+  // guest's handle could sign up and absorb their match history - the
+  // exact hijack the anon_id binding exists to prevent. Legacy guests
+  // (anon_id IS NULL, created before the binding existed) stay claimable
+  // by handle alone.
+  if (target.anonId !== null && target.anonId !== c.var.anonId) {
+    return c.json(
+      {
+        error: 'guest_not_yours',
+        message: 'That guest identity belongs to a different browser session.',
+      },
+      403,
     );
   }
 

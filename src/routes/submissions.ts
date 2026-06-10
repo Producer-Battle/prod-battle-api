@@ -46,26 +46,62 @@ function extFromContentType(ct: string): string {
   return 'wav';
 }
 
-// For daily matches the caller does not need to be a pre-seated player.
-// We just need to find/create the user row and resolve the match.
-async function matchAndUser(code: string, handle: string) {
+// Resolve a caller into (match, user). The caller's identity is derived
+// from the authenticated session if present, otherwise from the pb_anon
+// HttpOnly cookie's binding to a users.anon_id row. The `handle` body
+// parameter is consulted only as a tie-breaker - if it doesn't match
+// the caller's bound identity we reject rather than silently impersonate.
+//
+// Daily matches don't require a pre-seated row; other modes do.
+async function matchAndUser(
+  code: string,
+  handle: string,
+  ctx: { authenticatedUserId: string | null; anonId: string },
+) {
   const d = db();
   const [m] = await d.select().from(matches).where(eq(matches.roomCode, code)).limit(1);
   if (!m) return { error: 'match not found' as const };
 
-  const [u] = await d.select().from(users).where(eq(users.handle, handle)).limit(1);
-  if (!u) return { error: 'user not found' as const };
+  let userRow: typeof users.$inferSelect | undefined;
+
+  if (ctx.authenticatedUserId) {
+    [userRow] = await d.select().from(users).where(eq(users.id, ctx.authenticatedUserId)).limit(1);
+  } else if (handle) {
+    // Handle-first resolution; the pb_anon cookie is the ownership check.
+    // Reject rows bound to a DIFFERENT anon_id (impersonation). Claim
+    // legacy guest stubs (anon_id NULL + @guest.local email) for this
+    // cookie; real accounts also have anon_id NULL and must never be
+    // resolvable by handle.
+    [userRow] = await d.select().from(users).where(eq(users.handle, handle)).limit(1);
+    if (userRow) {
+      if (userRow.anonId != null && userRow.anonId !== ctx.anonId) {
+        return { error: 'forbidden' as const };
+      }
+      if (userRow.anonId == null) {
+        if (!userRow.email.endsWith('@guest.local')) {
+          return { error: 'forbidden' as const };
+        }
+        await d.update(users).set({ anonId: ctx.anonId }).where(eq(users.id, userRow.id));
+      }
+    }
+  } else {
+    // No handle sent: fall back to whichever guest row this cookie
+    // last used.
+    [userRow] = await d.select().from(users).where(eq(users.anonId, ctx.anonId)).limit(1);
+  }
+
+  if (!userRow) return { error: 'user not found' as const };
 
   if (m.mode !== 'daily') {
     const [player] = await d
       .select()
       .from(matchPlayers)
-      .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, u.id)))
+      .where(and(eq(matchPlayers.matchId, m.id), eq(matchPlayers.userId, userRow.id)))
       .limit(1);
     if (!player) return { error: 'not a player in this match' as const };
   }
 
-  return { match: m, user: u };
+  return { match: m, user: userRow };
 }
 
 // ─── POST /rooms/:code/upload-url ────────────────────────────────────────
@@ -107,8 +143,14 @@ submissionsRoutes.openapi(uploadUrlRoute, async (c) => {
   const { code } = c.req.valid('param');
   const { user: handle, contentType } = c.req.valid('json');
 
-  const result = await matchAndUser(code, handle);
-  if ('error' in result) return c.json({ error: result.error }, 404);
+  const result = await matchAndUser(code, handle, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if ('error' in result) {
+    const status = result.error === 'forbidden' ? 403 : 404;
+    return c.json({ error: result.error }, status);
+  }
 
   const ext = extFromContentType(contentType);
   const key = `matches/${result.match.id}/${result.user.id}.${ext}`;
@@ -168,8 +210,14 @@ submissionsRoutes.openapi(submitRoute, async (c) => {
   const { code } = c.req.valid('param');
   const body = c.req.valid('json');
 
-  const result = await matchAndUser(code, body.user);
-  if ('error' in result) return c.json({ error: result.error }, 404);
+  const result = await matchAndUser(code, body.user, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if ('error' in result) {
+    const status = result.error === 'forbidden' ? 403 : 404;
+    return c.json({ error: result.error }, status);
+  }
 
   const d = db();
 

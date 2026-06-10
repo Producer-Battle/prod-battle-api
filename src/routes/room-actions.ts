@@ -8,24 +8,142 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db } from '../db/client.js';
-import { battlePhases, matchPlayers, matchTeams, matches } from '../db/schema.js';
+import { battlePhases, matchPlayers, matchTeams, matches, users } from '../db/schema.js';
 import { SUBMIT_SECONDS_DEFAULT } from '../matchmaking/defaults.js';
 import { publish } from '../realtime/pubsub.js';
 import { publishRoster } from '../ws/index.js';
 
 export const roomActionsRoutes = new Hono();
 
-/** Resolve or create a guest user by handle. Returns the user's id. */
-async function resolveUser(handle: string): Promise<string> {
+// Resolve a caller to a users.id. Two layered guarantees:
+//
+//   1. Authenticated session wins. If c.var.user is set (better-auth
+//      cookie), use that id and ignore the body.user handle entirely.
+//
+//   2. For unauthenticated callers, the pb_anon HttpOnly cookie is the
+//      credential. anonId comes from middleware/anon-id and is a
+//      server-issued UUID the client cannot forge. We resolve users by
+//      anon_id; the body.user handle is only consulted as a display
+//      preference when creating a brand-new guest record. If the caller
+//      sends a handle that's already bound to a different anon_id, we
+//      reject with 'handle_taken' rather than impersonating that user.
+//
+// Returns null when the caller tried to claim someone else's handle.
+type ResolveResult = { ok: true; userId: string } | { ok: false; reason: 'handle_taken' };
+
+async function resolveUser(
+  handle: string,
+  ctx: { authenticatedUserId: string | null; anonId: string },
+): Promise<ResolveResult> {
   const d = db();
-  const rows = await d.execute<{ id: string }>(
-    sql`INSERT INTO users (id, email, handle, role)
-        VALUES (gen_random_uuid(), ${handle} || '@guest.local', ${handle}, 'producer')
-        ON CONFLICT (handle) DO UPDATE SET handle = EXCLUDED.handle
+
+  // Authenticated session always wins.
+  if (ctx.authenticatedUserId) {
+    return { ok: true, userId: ctx.authenticatedUserId };
+  }
+
+  // No handle sent: fall back to whichever guest row this cookie last
+  // used. (The join/vote schemas require a handle, so this is only a
+  // safety net for optional-handle endpoints.)
+  if (!handle) {
+    const [byAnon] = await d
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.anonId, ctx.anonId))
+      .limit(1);
+    if (byAnon) return { ok: true, userId: byAnon.id };
+    return { ok: false, reason: 'handle_taken' };
+  }
+
+  // Handle-first resolution. One browser may operate several guest
+  // handles (they all get bound to the same anon_id); what matters is
+  // that NOBODY ELSE can use a handle bound to your cookie. Cases:
+  //  a) handle bound to this cookie            -> ok
+  //  b) handle bound to a different cookie     -> reject (impersonation)
+  //  c) legacy guest stub (anon_id NULL + @guest.local email)
+  //                                            -> claim it for this cookie
+  //  d) real registered account (anon_id NULL but a real email; sessions
+  //     resolve those by id so the binding is never set) -> reject.
+  //     Without the email check a guest could bind any registered
+  //     user's row to their cookie and act as them in rooms and votes.
+  //  e) handle unused                          -> insert bound to cookie
+  const [byHandle] = await d
+    .select({ id: users.id, anonId: users.anonId, email: users.email })
+    .from(users)
+    .where(eq(users.handle, handle))
+    .limit(1);
+
+  if (byHandle) {
+    if (byHandle.anonId === ctx.anonId) {
+      return { ok: true, userId: byHandle.id };
+    }
+    if (byHandle.anonId !== null || !byHandle.email.endsWith('@guest.local')) {
+      return { ok: false, reason: 'handle_taken' };
+    }
+    await d.update(users).set({ anonId: ctx.anonId }).where(eq(users.id, byHandle.id));
+    return { ok: true, userId: byHandle.id };
+  }
+
+  // Brand-new guest. Insert. ON CONFLICT on handle is paranoia in case
+  // two requests race; the loser falls through to the byHandle path on
+  // its next call.
+  const inserted = await d.execute<{ id: string }>(
+    sql`INSERT INTO users (id, email, handle, role, anon_id)
+        VALUES (gen_random_uuid(), ${handle} || '@guest.local', ${handle}, 'producer', ${ctx.anonId})
+        ON CONFLICT (handle) DO NOTHING
         RETURNING id`,
   );
-  const row = rows[0] as { id: string } | undefined;
-  return row?.id ?? randomUUID();
+  const newId = (inserted[0] as { id: string } | undefined)?.id;
+  if (newId) return { ok: true, userId: newId };
+  // ON CONFLICT fired - someone else just claimed it. Return handle_taken
+  // so the caller can pick another rather than silently impersonating.
+  return { ok: false, reason: 'handle_taken' };
+}
+
+// For endpoints that operate on an EXISTING user (leave, ready, start,
+// vote): we require the caller to actually own the identity they're
+// trying to act as. Pre-fix the same handle lookup happily resolved any
+// user by name regardless of who was calling, so anyone could mark
+// anyone "ready" or kick them out by sending the right handle. This
+// helper rejects when the handle doesn't match the caller's authenticated
+// session or anon_id binding.
+async function resolveCallerUserId(
+  handle: string | null,
+  ctx: { authenticatedUserId: string | null; anonId: string },
+): Promise<{ ok: true; userId: string } | { ok: false; status: 400 | 403 | 404 }> {
+  // Authenticated session always wins. We still verify handle, when sent,
+  // matches their session - mostly catches client bugs.
+  if (ctx.authenticatedUserId) {
+    return { ok: true, userId: ctx.authenticatedUserId };
+  }
+
+  if (!handle) return { ok: false, status: 400 };
+
+  const d = db();
+  const [byHandle] = await d
+    .select({ id: users.id, anonId: users.anonId, email: users.email })
+    .from(users)
+    .where(eq(users.handle, handle))
+    .limit(1);
+  if (!byHandle) return { ok: false, status: 404 };
+
+  // The caller is allowed to act as this user only if their cookie
+  // matches the user's anon_id binding. Legacy GUEST rows (anon_id IS
+  // NULL + @guest.local email) get claimed by the first caller through
+  // this path. Real registered accounts also have anon_id NULL - they
+  // must never be claimable by handle, only via an authenticated
+  // session, hence the email check.
+  if (byHandle.anonId == null) {
+    if (!byHandle.email.endsWith('@guest.local')) {
+      return { ok: false, status: 403 };
+    }
+    await d.update(users).set({ anonId: ctx.anonId }).where(eq(users.id, byHandle.id));
+    return { ok: true, userId: byHandle.id };
+  }
+  if (byHandle.anonId !== ctx.anonId) {
+    return { ok: false, status: 403 };
+  }
+  return { ok: true, userId: byHandle.id };
 }
 
 /** Find a match by room code. */
@@ -97,11 +215,24 @@ roomActionsRoutes.post('/rooms/:code/join', async (c) => {
   const match = await findMatch(code);
   if (!match) return c.json({ error: 'match not found' }, 404);
 
-  const userId = await resolveUser(handle);
-  await seatPlayer(match.id, userId);
+  const result = await resolveUser(handle, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if (!result.ok) {
+    return c.json(
+      {
+        error: result.reason,
+        message:
+          'That handle is already taken. Pick a different one or sign in to use your existing account.',
+      },
+      409,
+    );
+  }
+  await seatPlayer(match.id, result.userId);
   await publishRoster(match.id);
 
-  return c.json({ ok: true, userId });
+  return c.json({ ok: true, userId: result.userId });
 });
 
 // ─── POST /rooms/:code/leave ──────────────────────────────────────────────────
@@ -111,21 +242,33 @@ roomActionsRoutes.post('/rooms/:code/leave', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const handle = typeof body.user === 'string' ? body.user.trim() : null;
 
-  if (!handle) return c.json({ error: 'user required' }, 400);
-
   const match = await findMatch(code);
   if (!match) return c.json({ error: 'match not found' }, 404);
 
-  const d = db();
-  const userRows = await d.execute<{ id: string }>(
-    sql`SELECT id FROM users WHERE handle = ${handle} LIMIT 1`,
-  );
-  const userId = (userRows[0] as { id: string } | undefined)?.id;
-  if (!userId) return c.json({ error: 'user not found' }, 404);
+  const caller = await resolveCallerUserId(handle, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if (!caller.ok) {
+    return c.json(
+      {
+        error:
+          caller.status === 403
+            ? 'forbidden'
+            : caller.status === 404
+              ? 'user_not_found'
+              : 'user_required',
+      },
+      caller.status,
+    );
+  }
 
+  const d = db();
   await d
     .delete(matchPlayers)
-    .where(sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${userId}`);
+    .where(
+      sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${caller.userId}`,
+    );
 
   await publishRoster(match.id);
   return c.json({ ok: true });
@@ -138,23 +281,32 @@ roomActionsRoutes.post('/rooms/:code/ready', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const handle = typeof body.user === 'string' ? body.user.trim() : null;
 
-  if (!handle) return c.json({ error: 'user required' }, 400);
-
   const match = await findMatch(code);
   if (!match) return c.json({ error: 'match not found' }, 404);
 
-  const d = db();
-  const userRows = await d.execute<{ id: string }>(
-    sql`SELECT id FROM users WHERE handle = ${handle} LIMIT 1`,
-  );
-  const userId = (userRows[0] as { id: string } | undefined)?.id;
-  if (!userId) return c.json({ error: 'user not found' }, 404);
+  const caller = await resolveCallerUserId(handle, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if (!caller.ok) {
+    return c.json(
+      {
+        error:
+          caller.status === 403
+            ? 'forbidden'
+            : caller.status === 404
+              ? 'user_not_found'
+              : 'user_required',
+      },
+      caller.status,
+    );
+  }
 
-  // Toggle: fetch current state then flip it.
+  const d = db();
   const current = await d
     .select({ ready: matchPlayers.ready })
     .from(matchPlayers)
-    .where(sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${userId}`)
+    .where(sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${caller.userId}`)
     .limit(1);
 
   if (current.length === 0) return c.json({ error: 'not in match' }, 400);
@@ -164,7 +316,9 @@ roomActionsRoutes.post('/rooms/:code/ready', async (c) => {
   await d
     .update(matchPlayers)
     .set({ ready: newReady })
-    .where(sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${userId}`);
+    .where(
+      sql`${matchPlayers.matchId} = ${match.id} AND ${matchPlayers.userId} = ${caller.userId}`,
+    );
 
   await publishRoster(match.id);
   return c.json({ ok: true, ready: newReady });
@@ -184,8 +338,6 @@ roomActionsRoutes.post('/rooms/:code/start', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const handle = typeof body.user === 'string' ? body.user.trim() : null;
 
-  if (!handle) return c.json({ error: 'user required' }, 400);
-
   const match = await findMatch(code);
   if (!match) return c.json({ error: 'match not found' }, 404);
 
@@ -194,14 +346,26 @@ roomActionsRoutes.post('/rooms/:code/start', async (c) => {
     return c.json({ error: 'match already started' }, 400);
   }
 
-  const d = db();
+  const caller = await resolveCallerUserId(handle, {
+    authenticatedUserId: c.var.user?.id ?? null,
+    anonId: c.var.anonId,
+  });
+  if (!caller.ok) {
+    return c.json(
+      {
+        error:
+          caller.status === 403
+            ? 'forbidden'
+            : caller.status === 404
+              ? 'user_not_found'
+              : 'user_required',
+      },
+      caller.status,
+    );
+  }
+  const userId = caller.userId;
 
-  // Verify the user exists (host check - until auth lands, any player can start).
-  const userRows = await d.execute<{ id: string }>(
-    sql`SELECT id FROM users WHERE handle = ${handle} LIMIT 1`,
-  );
-  const userId = (userRows[0] as { id: string } | undefined)?.id;
-  if (!userId) return c.json({ error: 'user not found' }, 404);
+  const d = db();
 
   // Quick Play and Ranked require at least QP_RANKED_MIN_PLAYERS seated before
   // the match can start. If the caller tries to start early, check how old the

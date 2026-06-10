@@ -95,20 +95,46 @@ async function playMatch(
   // status='lobby' need a bump for the harness submit to work.
   await db().execute(sql`UPDATE matches SET status = 'submit' WHERE id = ${matchId}`);
 
-  // Use a fresh app per call so any session-bound logic re-resolves.
-  const app = buildTestApp();
-  const winnerSubId = await submitTrack(app, code, winnerHandle);
-  const loserSubId = await submitTrack(app, code, loserHandle);
+  // Bracket entrants are REGISTERED accounts (seedTestUser), and since the
+  // anon_id binding landed, registered identities are no longer resolvable
+  // by bare handle - that hole let any visitor act as any user. Each
+  // producer therefore acts through an app authenticated as themselves.
+  const appAs = async (handle: string) => {
+    const [u] = (await db().execute<{
+      id: string;
+      handle: string;
+      email: string;
+      role: string;
+      plan: string;
+    }>(
+      sql`SELECT id, handle, email, role, plan FROM users WHERE handle = ${handle} LIMIT 1`,
+    )) as Array<{ id: string; handle: string; email: string; role: string; plan: string }>;
+    if (!u) throw new Error(`playMatch: no user row for handle "${handle}"`);
+    return buildTestApp({
+      asUser: {
+        id: u.id,
+        handle: u.handle,
+        email: u.email,
+        role: u.role as 'producer',
+        plan: u.plan as 'free',
+      },
+    });
+  };
+  const winnerApp = await appAs(winnerHandle);
+  const loserApp = await appAs(loserHandle);
+
+  const winnerSubId = await submitTrack(winnerApp, code, winnerHandle);
+  const loserSubId = await submitTrack(loserApp, code, loserHandle);
 
   // Both submitted -> match auto-advances to vote. Sanity check.
-  expect((await getMatch(app, code)).currentPhase).toBe('vote');
+  expect((await getMatch(winnerApp, code)).currentPhase).toBe('vote');
 
   // Each producer scores the other a 5; self-vote drops silently.
-  await postJson(app, `/rooms/${code}/vote`, {
+  await postJson(winnerApp, `/rooms/${code}/vote`, {
     user: winnerHandle,
     votes: [{ submissionId: loserSubId, score: 1 }],
   });
-  await postJson(app, `/rooms/${code}/vote`, {
+  await postJson(loserApp, `/rooms/${code}/vote`, {
     user: loserHandle,
     votes: [{ submissionId: winnerSubId, score: 5 }],
   });

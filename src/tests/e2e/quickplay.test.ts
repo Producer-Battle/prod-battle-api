@@ -6,6 +6,7 @@ import {
   getResults,
   getReveal,
   joinRoom,
+  postJson,
   startRoom,
   submitTrack,
   uniqueHandle,
@@ -147,13 +148,17 @@ describe('mode: quickplay', () => {
     const host = uniqueHandle('qp-lonely');
     await joinRoom(app, match.roomCode, host);
 
-    const res = await app.request(`/rooms/${match.roomCode}/start`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user: host }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string; seated: number; minPlayers: number };
+    // postJson rides the app's cookie jar so the caller resolves as the
+    // host they just joined as (raw app.request would arrive with a fresh
+    // pb_anon cookie and get 403 identity-not-yours before the player-count
+    // check even runs).
+    const { status, json } = await postJson<{
+      error: string;
+      seated: number;
+      minPlayers: number;
+    }>(app, `/rooms/${match.roomCode}/start`, { user: host });
+    expect(status).toBe(400);
+    const body = json;
     expect(body.error).toBe('waiting_for_players');
     expect(body.minPlayers).toBe(2);
     expect(body.seated).toBe(1);
