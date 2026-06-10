@@ -140,7 +140,15 @@ internalAlertsRoutes.post('/internal/alertmanager', async (c) => {
     firing > 0 ? `${firing} alert${firing === 1 ? '' : 's'} firing` : `${resolved} resolved`;
   const names = [...new Set(alerts.map((a) => a.labels?.alertname ?? 'unknown'))].join(', ');
 
-  const to = process.env.ALERT_EMAIL ?? 'botw44@gmail.com';
+  // No hardcoded fallback: this repo is public and a personal inbox does
+  // not belong in source. ALERT_EMAIL comes from the api-env ConfigMap;
+  // when missing we defer (503) so Alertmanager retries rather than
+  // silently dropping.
+  const to = process.env.ALERT_EMAIL?.trim();
+  if (!to) {
+    console.warn('[alerts] ALERT_EMAIL not configured; alert delivery deferred');
+    return c.json({ ok: false, reason: 'alert_email_not_configured' }, 503);
+  }
   const namespaces = [
     ...new Set(alerts.map((a) => a.labels?.namespace).filter(Boolean)),
   ] as string[];

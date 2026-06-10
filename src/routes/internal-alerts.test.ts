@@ -141,6 +141,21 @@ describe('POST /internal/alertmanager', () => {
     expect(sent.text).toContain('unavailable');
   });
 
+  it('returns 503 when ALERT_EMAIL is unset (no hardcoded recipient in public source)', async () => {
+    vi.stubEnv('ALERT_EMAIL', undefined);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const res = await buildApp().request('/internal/alertmanager', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(AM_PAYLOAD),
+    });
+
+    expect(res.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('propagates relay failure as 502 so Alertmanager retries', async () => {
     vi.stubGlobal(
       'fetch',
