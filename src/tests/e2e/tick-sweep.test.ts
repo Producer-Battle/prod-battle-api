@@ -419,4 +419,107 @@ describe('staleMatchSweep', () => {
     );
     expect(rows as Array<{ id: string }>).toHaveLength(1);
   });
+
+  // ─── Rule 8: stale guest cleanup ──────────────────────────────────────
+
+  async function seedGuest(opts: { ageDays: number; handle?: string }): Promise<string> {
+    const d = db();
+    const handle = opts.handle ?? `sweep-guest-${randomUUID().slice(0, 8)}`;
+    const id = randomUUID();
+    await d.execute(sql`
+      INSERT INTO users (id, email, handle, role, created_at)
+      VALUES (${id}, ${handle} || '@guest.local', ${handle}, 'producer',
+              now() - make_interval(days => ${opts.ageDays}))
+    `);
+    return id;
+  }
+
+  async function userExists(id: string): Promise<boolean> {
+    const d = db();
+    const rows = await d.execute<{ id: string }>(sql`SELECT id FROM users WHERE id = ${id}`);
+    return (rows as Array<{ id: string }>).length > 0;
+  }
+
+  it('rule 8a: deletes zero-trace guests older than 30 days, keeps fresh ones', async () => {
+    const stale = await seedGuest({ ageDays: 45 });
+    const fresh = await seedGuest({ ageDays: 5 });
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    expect(await userExists(stale)).toBe(false);
+    expect(await userExists(fresh)).toBe(true);
+  });
+
+  it('rule 8: keeps guests with submissions regardless of age', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+    const guest = await seedGuest({ ageDays: 200 });
+
+    const matchId = randomUUID();
+    await d.execute(sql`
+      INSERT INTO matches (id, mode, status, team_size, team_count, primary_genre_id, created_at)
+      VALUES (${matchId}, 'quickplay', 'results', 1, 8, ${genreId}, now() - interval '200 days')
+    `);
+    await d.execute(sql`
+      INSERT INTO submissions (id, match_id, user_id, genre_id, audio_url, duration_sec)
+      VALUES (${randomUUID()}, ${matchId}, ${guest}, ${genreId},
+              'http://localhost:9000/pb-test/audio/keep.mp3', 30)
+    `);
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    expect(await userExists(guest)).toBe(true);
+  });
+
+  it('rule 8b: deletes lobby-only guests dormant >90 days, keeps recently seated', async () => {
+    const d = db();
+    const { genreId } = await seedTestFixtures();
+
+    async function seatGuestInMatch(userId: string, matchAgeDays: number): Promise<void> {
+      const matchId = randomUUID();
+      const teamId = randomUUID();
+      // status 'results', not 'cancelled': rule 4 garbage-collects old
+      // cancelled matches earlier in the same sweep, which would cascade
+      // the seats away before rule 8 looks at them.
+      await d.execute(sql`
+        INSERT INTO matches (id, mode, status, team_size, team_count, primary_genre_id, created_at)
+        VALUES (${matchId}, 'quickplay', 'results', 1, 8, ${genreId},
+                now() - make_interval(days => ${matchAgeDays}))
+      `);
+      await d.execute(sql`
+        INSERT INTO match_teams (id, match_id, seat) VALUES (${teamId}, ${matchId}, 0)
+      `);
+      await d.execute(sql`
+        INSERT INTO match_players (match_id, user_id, team_id)
+        VALUES (${matchId}, ${userId}, ${teamId})
+      `);
+    }
+
+    const dormant = await seedGuest({ ageDays: 120 });
+    await seatGuestInMatch(dormant, 100);
+
+    const active = await seedGuest({ ageDays: 120 });
+    await seatGuestInMatch(active, 100);
+    await seatGuestInMatch(active, 10); // re-seated recently -> kept
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    expect(await userExists(dormant)).toBe(false);
+    expect(await userExists(active)).toBe(true);
+  });
+
+  it('rule 8: never touches registered accounts, however old and idle', async () => {
+    const d = db();
+    const id = randomUUID();
+    await d.execute(sql`
+      INSERT INTO users (id, email, handle, role, created_at)
+      VALUES (${id}, 'sweep-real-' || ${id} || '@test.local',
+              'sweep-real-' || substr(${id}, 1, 8), 'producer',
+              now() - interval '400 days')
+    `);
+
+    await withFreshSweep(() => staleMatchSweep());
+
+    expect(await userExists(id)).toBe(true);
+  });
 });

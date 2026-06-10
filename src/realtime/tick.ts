@@ -551,6 +551,55 @@ export async function staleMatchSweep(): Promise<void> {
     await d.execute(sql`DELETE FROM users WHERE id = ${row.id}`);
     console.log(`[sweep] hard-deleted user ${row.id} (was @${row.handle})`);
   }
+
+  // Rule 8: stale guest accounts. Guests pile up forever otherwise - every
+  // visitor who ever joined a lobby leaves a @guest.local row behind.
+  // Two tiers, both deliberately conservative:
+  //
+  //   8a. Zero-trace guests: never submitted, never voted, never seated in
+  //       a match. Nothing references them; after 30 days they're noise.
+  //   8b. Dormant lobby-only guests: seated in matches at some point but
+  //       never submitted and never voted, and their latest seat is over
+  //       90 days old. Deleting cascades their match_players rows; the
+  //       matches involved are long finished or cancelled, and results
+  //       are materialised on submissions (final_rank/score), so nothing
+  //       user-visible changes.
+  //
+  // Guests WITH submissions or votes are kept indefinitely: submissions
+  // are content (feed, leaderboards, profiles) and votes back tallies.
+  // Real accounts are excluded by the @guest.local email filter, and the
+  // claim-guest flow remains available for anything not yet swept.
+  const staleGuests = await d.execute<{ rowcount: number }>(
+    sql`WITH doomed AS (
+          SELECT u.id FROM users u
+           WHERE u.email LIKE '%@guest.local'
+             AND u.created_at < now() - interval '30 days'
+             AND NOT EXISTS (SELECT 1 FROM submissions s WHERE s.user_id = u.id)
+             AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.voter_id = u.id)
+             AND (
+                   -- 8a: never seated anywhere
+                   NOT EXISTS (SELECT 1 FROM match_players mp WHERE mp.user_id = u.id)
+                   -- 8b: seated, but every seat is >90 days old
+                   OR NOT EXISTS (
+                        SELECT 1 FROM match_players mp
+                         JOIN matches m ON m.id = mp.match_id
+                        WHERE mp.user_id = u.id
+                          AND m.created_at > now() - interval '90 days'
+                      )
+                 )
+           LIMIT 100
+        ),
+        deleted AS (
+          DELETE FROM users WHERE id IN (SELECT id FROM doomed) RETURNING id
+        )
+        SELECT count(*)::int AS rowcount FROM deleted`,
+  );
+  const staleGuestCount = Number(
+    (staleGuests[0] as { rowcount: number } | undefined)?.rowcount ?? 0,
+  );
+  if (staleGuestCount > 0) {
+    console.log(`[sweep] stale guests deleted: ${staleGuestCount}`);
+  }
 }
 
 // Throttle the grace scan to once per 30s. The 1s tick is overkill for
