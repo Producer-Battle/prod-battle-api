@@ -9,6 +9,7 @@ import { anonId } from './middleware/anon-id.js';
 import { requireSignupQuota } from './middleware/rate-limit.js';
 import { attachSession } from './middleware/session.js';
 import { logger } from './observability/logger.js';
+import { httpMetrics, registerMetricsRoute } from './observability/metrics.js';
 import { initSentry } from './observability/sentry.js';
 import { startTickLoop } from './realtime/tick.js';
 import { registerRoutes } from './routes/index.js';
@@ -69,6 +70,11 @@ app.use('*', attachSession());
 // Runs AFTER attachSession so authenticated users still get the cookie but
 // rate-limit middleware can bail early via c.var.user.
 app.use('*', anonId());
+
+// Request-duration histogram for Prometheus. Sits directly above the
+// routes so it times handler work, not the CORS/session middleware.
+app.use('*', httpMetrics());
+registerMetricsRoute(app);
 
 registerRoutes(app);
 
