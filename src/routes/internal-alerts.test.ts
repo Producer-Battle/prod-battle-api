@@ -69,7 +69,7 @@ describe('POST /internal/alertmanager', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('no-ops gracefully when the relay is not configured', async () => {
+  it('returns 503 when the relay is not configured so Alertmanager retries', async () => {
     vi.stubEnv('MAIL_RELAY_URL', undefined);
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
@@ -80,7 +80,7 @@ describe('POST /internal/alertmanager', () => {
       body: JSON.stringify(AM_PAYLOAD),
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     expect(((await res.json()) as { reason: string }).reason).toBe('relay_not_configured');
     expect(fetchSpy).not.toHaveBeenCalled();
   });

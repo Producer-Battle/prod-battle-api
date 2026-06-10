@@ -49,8 +49,12 @@ internalAlertsRoutes.post('/internal/alertmanager', async (c) => {
   const relayUrl = process.env.MAIL_RELAY_URL?.trim();
   const relayToken = process.env.MAIL_RELAY_TOKEN ?? '';
   if (!relayUrl || !relayToken || relayToken === '-') {
-    console.warn('[alerts] mail relay not configured; dropping alert notification');
-    return c.json({ ok: false, reason: 'relay_not_configured' }, 200);
+    // 503, not 200: a 2xx makes Alertmanager mark the notification
+    // delivered and never retry - a silent drop. 503 keeps it retrying
+    // until the relay env shows up (observed live during the
+    // MAIL_RELAY_URL gap after the cutover).
+    console.warn('[alerts] mail relay not configured; alert delivery deferred');
+    return c.json({ ok: false, reason: 'relay_not_configured' }, 503);
   }
 
   let payload: AmWebhook;
