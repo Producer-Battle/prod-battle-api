@@ -87,6 +87,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The postgres-backup CronJob (prod-battle-infra k8s-addons) pins
+      # pg-backup:v1. The :v1 tag is pushed on every build - the image is
+      # a thin alpine + pg_dump/aws/age layer that only changes when its
+      # Dockerfile does, so "latest rebuild wins" is fine here.
+      - name: Build and push pg-backup job image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./jobs/pg-backup
+          push: true
+          tags: |
+            ghcr.io/producer-battle/pg-backup:v1
+            ghcr.io/producer-battle/pg-backup:${{ needs.meta.outputs.primary_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Apply schema migrations BEFORE rolling the container. Atlas owns the
   # application step (see atlas.hcl); the underlying SQL files in
