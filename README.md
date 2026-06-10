@@ -1,7 +1,7 @@
 # prod-battle-api
 
 Backend for the Producer Battle platform. Hono on Node 22, Postgres +
-Redis + Scaleway Object Storage. Serves HTTP (REST, documented via
+Redis-compatible Valkey + Wasabi Object Storage. Serves HTTP (REST, documented via
 OpenAPI) and WebSockets from the same process.
 
 ## Stack
@@ -11,8 +11,8 @@ OpenAPI) and WebSockets from the same process.
 - **drizzle-orm** + `drizzle-kit` on Postgres 16
 - **ioredis** - pub/sub, hot match state, tick-worker leader election
 - **better-auth** - sessions in Postgres
-- **Scaleway Object Storage** via AWS SDK v3 (S3-compatible)
-- **Scaleway Serverless Jobs** - ffmpeg transcoder (defined in `jobs/ffmpeg/`)
+- **Wasabi Object Storage** via AWS SDK v3 (S3-compatible)
+- **ffmpeg job image** - transcoder (defined in `jobs/ffmpeg/`), published to ghcr.io alongside the API image
 
 ## Layout
 
@@ -33,9 +33,9 @@ src/
     client.ts         drizzle client factory
     migrations/       drizzle-kit generated SQL
 
-jobs/ffmpeg/          Scaleway Serverless Job: normalize + waveform JSON
+jobs/ffmpeg/          ffmpeg job image: normalize + waveform JSON
 scripts/              openapi emit + publish
-.github/workflows/    ci.yml (lint/type/test/emit) + deploy.yml (docker → Scaleway Container Registry)
+.github/workflows/    ci.yml (lint/type/test/emit) + deploy.yml (docker -> ghcr.io -> Atlas migrate -> kubectl rollout)
 ```
 
 ## Data model highlights
@@ -73,19 +73,13 @@ client via `@hey-api/openapi-ts`.
 
 ## Deploy
 
-On push to `main`: GitHub Actions builds the Docker image, pushes to the
-Scaleway Container Registry (namespace from `prod-battle-infra`), and
-updates the Serverless Container to pull the new image tag.
+On push to `main`: GitHub Actions builds the Docker image, pushes it to
+`ghcr.io/producer-battle/prod-battle-api`, applies migrations to the prod
+Postgres with Atlas, then rolls the Kubernetes Deployment on the Kapsule
+cluster (`kubectl set image` + rollout status + /health smoke test).
 
-On release tag: same, but targets prod.
-
-Secrets needed:
-
-| Secret | Purpose |
-|---|---|
-| `SCW_REGISTRY_USER` / `SCW_REGISTRY_PASSWORD` | Scaleway registry push |
-| `SCW_ACCESS_KEY` / `SCW_SECRET_KEY` | Scaleway API (container update) |
-| `SCW_PROJECT_ID_STAGING` / `SCW_PROJECT_ID_PROD` | Project targeting |
+See `DEPLOY.md` for the full pipeline, secrets layout, manual rollback,
+and cluster topology.
 
 ## Honor system
 
