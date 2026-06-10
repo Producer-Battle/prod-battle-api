@@ -140,7 +140,7 @@ internalAlertsRoutes.post('/internal/alertmanager', async (c) => {
     firing > 0 ? `${firing} alert${firing === 1 ? '' : 's'} firing` : `${resolved} resolved`;
   const names = [...new Set(alerts.map((a) => a.labels?.alertname ?? 'unknown'))].join(', ');
 
-  const to = process.env.ALERT_EMAIL ?? 'brampescheck@gmail.com';
+  const to = process.env.ALERT_EMAIL ?? 'botw44@gmail.com';
   const namespaces = [
     ...new Set(alerts.map((a) => a.labels?.namespace).filter(Boolean)),
   ] as string[];
