@@ -85,6 +85,62 @@ describe('POST /internal/alertmanager', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('embeds recent Loki log lines when LOKI_URL is configured', async () => {
+    vi.stubEnv('LOKI_URL', 'http://loki.test:3100');
+    const lokiResponse = {
+      data: {
+        result: [
+          {
+            stream: { pod: 'api-abc' },
+            values: [['1781190000000000000', '{"level":"error","event":"boom"}']],
+          },
+        ],
+      },
+    };
+    const fetchSpy = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      if (String(url).includes('/loki/')) return new Response(JSON.stringify(lokiResponse));
+      return new Response(JSON.stringify({ messageId: 'x' }));
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const res = await buildApp().request('/internal/alertmanager', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(AM_PAYLOAD),
+    });
+
+    expect(res.status).toBe(200);
+    // Two fetches: loki query first, then the relay send.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const relayCall = fetchSpy.mock.calls.find(([u]) => !String(u).includes('/loki/'));
+    if (!relayCall) throw new Error('relay call missing');
+    const sent = JSON.parse(String((relayCall[1] as RequestInit).body));
+    expect(sent.text).toContain('Recent logs (app');
+    expect(sent.text).toContain('[api-abc]');
+    expect(sent.text).toContain('"event":"boom"');
+  });
+
+  it('still delivers when Loki is down (logs section degrades)', async () => {
+    vi.stubEnv('LOKI_URL', 'http://loki.test:3100');
+    const fetchSpy = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      if (String(url).includes('/loki/')) throw new Error('connect refused');
+      return new Response(JSON.stringify({ messageId: 'x' }));
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const res = await buildApp().request('/internal/alertmanager', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(AM_PAYLOAD),
+    });
+
+    expect(res.status).toBe(200);
+    const relayCall = fetchSpy.mock.calls.find(([u]) => !String(u).includes('/loki/'));
+    if (!relayCall) throw new Error('relay call missing');
+    const sent = JSON.parse(String((relayCall[1] as RequestInit).body));
+    expect(sent.text).toContain('unavailable');
+  });
+
   it('propagates relay failure as 502 so Alertmanager retries', async () => {
     vi.stubGlobal(
       'fetch',

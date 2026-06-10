@@ -38,6 +38,73 @@ function formatAlert(a: AmAlert): string {
   return `[${(a.status ?? 'firing').toUpperCase()}] ${name} (severity=${sev}, namespace=${ns})\n  ${summary}\n  since: ${a.startsAt ?? '?'}`;
 }
 
+// Per-namespace LogQL used to enrich the alert email with the actual log
+// lines behind the numbers. Conservative selectors: error-shaped lines
+// only, so the email stays readable.
+function logQueryFor(ns: string): string {
+  if (ns === 'app') {
+    return '{namespace="app", pod=~"api-.*"} |~ "\\"level\\":\\"(error|fatal)\\"|panic|FATAL|ERR"';
+  }
+  if (ns === 'ingress-nginx') {
+    // Positional status extraction - a loose " 5xx " regex matches the
+    // request_length field on healthy lines (learned the hard way on the
+    // Grafana panel).
+    return '{namespace="ingress-nginx"} | pattern "<_> - <_> [<_>] \\"<_>\\" <status> <_>" | status =~ "5.."';
+  }
+  return `{namespace="${ns}"} |~ "(?i)error|fail"`;
+}
+
+// Fetch recent matching log lines from Loki for the namespaces involved
+// in this notification. Best-effort: any failure degrades to a note in
+// the email rather than blocking delivery.
+async function recentLogs(namespaces: string[]): Promise<string> {
+  const lokiUrl = process.env.LOKI_URL?.trim();
+  if (!lokiUrl) return '';
+
+  const sections: string[] = [];
+  const end = Date.now() * 1_000_000;
+  const start = end - 15 * 60 * 1_000_000_000; // last 15 minutes
+
+  for (const ns of namespaces) {
+    try {
+      const qs = new URLSearchParams({
+        query: logQueryFor(ns),
+        limit: '15',
+        start: String(start),
+        end: String(end),
+        direction: 'backward',
+      });
+      const res = await fetch(
+        `${lokiUrl.replace(/\/$/, '')}/loki/api/v1/query_range?${qs.toString()}`,
+        { signal: AbortSignal.timeout(8_000) },
+      );
+      if (!res.ok) {
+        sections.push(`Recent logs (${ns}): unavailable (loki ${res.status})`);
+        continue;
+      }
+      const data = (await res.json()) as {
+        data?: { result?: Array<{ stream?: { pod?: string }; values?: [string, string][] }> };
+      };
+      const lines: string[] = [];
+      for (const stream of data.data?.result ?? []) {
+        for (const [tsNs, line] of stream.values ?? []) {
+          const ts = new Date(Number(tsNs) / 1_000_000).toISOString();
+          lines.push(`  ${ts}  [${stream.stream?.pod ?? ns}] ${line.slice(0, 300)}`);
+        }
+      }
+      lines.sort().reverse();
+      sections.push(
+        lines.length > 0
+          ? `Recent logs (${ns}, last 15m, newest first):\n${lines.slice(0, 15).join('\n')}`
+          : `Recent logs (${ns}): no matching error lines in the last 15m.`,
+      );
+    } catch (err) {
+      sections.push(`Recent logs (${ns}): unavailable (${(err as Error).message})`);
+    }
+  }
+  return sections.length > 0 ? `\n\n${sections.join('\n\n')}` : '';
+}
+
 internalAlertsRoutes.post('/internal/alertmanager', async (c) => {
   // Cluster-internal only - same gate as /metrics.
   if (c.req.header('x-forwarded-for')) {
@@ -74,11 +141,15 @@ internalAlertsRoutes.post('/internal/alertmanager', async (c) => {
   const names = [...new Set(alerts.map((a) => a.labels?.alertname ?? 'unknown'))].join(', ');
 
   const to = process.env.ALERT_EMAIL ?? 'brampescheck@gmail.com';
+  const namespaces = [
+    ...new Set(alerts.map((a) => a.labels?.namespace).filter(Boolean)),
+  ] as string[];
+  const logs = await recentLogs(namespaces);
   const body = {
     from: process.env.SMTP_FROM ?? 'noreply@prodbattle.com',
     to,
     subject: `[prod-battle] ${headline}: ${names}`,
-    text: `${alerts.map(formatAlert).join('\n\n')}\n\n-- Alertmanager via api relay adapter`,
+    text: `${alerts.map(formatAlert).join('\n\n')}${logs}\n\n-- Alertmanager via api relay adapter`,
   };
 
   try {
