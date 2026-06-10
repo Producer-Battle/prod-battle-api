@@ -51,7 +51,11 @@ function logQueryFor(ns: string): string {
     // Grafana panel).
     return '{namespace="ingress-nginx"} | pattern "<_> - <_> [<_>] \\"<_>\\" <status> <_>" | status =~ "5.."';
   }
-  return `{namespace="${ns}"} |~ "(?i)error|fail"`;
+  // Match level markers only (logfmt level=error / JSON "level":"error").
+  // A loose (?i)error matched Loki's own query logs - info lines that
+  // merely CONTAIN the word error because our query string is embedded
+  // in them - which filled the first enriched email with noise.
+  return `{namespace="${ns}"} |~ "level=(error|fatal)|\\"level\\":\\"(error|fatal)\\""`;
 }
 
 // Fetch recent matching log lines from Loki for the namespaces involved
