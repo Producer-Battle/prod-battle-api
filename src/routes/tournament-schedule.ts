@@ -478,6 +478,68 @@ tournamentScheduleRoutes.openapi(cancelRouteDef, async (c) => {
   return c.json({ ok: true as const }, 200);
 });
 
+// ─── DELETE /admin/tournaments/:id (admin hard-delete) ─────────────────────
+// Permanently removes a terminal (cancelled or finished) tournament and its
+// matches. matches.tournamentId has no FK, so matches are deleted explicitly;
+// that cascades to submissions/votes/match_players. Deleting the tournament
+// row cascades to entries/showcase-submissions/reminders. Never touches a
+// non-terminal tournament so in-flight games can't be destroyed.
+
+const hardDeleteRouteDef = createRoute({
+  method: 'delete',
+  path: '/admin/tournaments/{id}',
+  tags: ['tournaments', 'admin'],
+  summary: 'Permanently delete a cancelled or finished tournament (admin only)',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Deleted',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    400: {
+      description: 'Tournament is not in a terminal state',
+      content: { 'application/json': { schema: ErrorBody } },
+    },
+    401: { description: 'Unauthenticated', content: { 'application/json': { schema: ErrorBody } } },
+    403: { description: 'Not an admin', content: { 'application/json': { schema: ErrorBody } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: ErrorBody } } },
+  },
+});
+
+tournamentScheduleRoutes.openapi(hardDeleteRouteDef, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated', message: 'Sign in.' }, 401);
+  if (user.role !== 'admin')
+    return c.json({ error: 'forbidden', message: 'Admin role required.' }, 403);
+
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [t] = await d
+    .select({ id: tournaments.id, status: tournaments.status })
+    .from(tournaments)
+    .where(eq(tournaments.id, id))
+    .limit(1);
+  if (!t) return c.json({ error: 'not_found', message: 'No such tournament.' }, 404);
+  if (t.status !== 'cancelled' && t.status !== 'finished')
+    return c.json(
+      {
+        error: 'not_terminal',
+        message: 'Only cancelled or finished tournaments can be deleted. Cancel it first.',
+      },
+      400,
+    );
+
+  await d.transaction(async (tx) => {
+    // Cascades to submissions / votes / match_players (FK onDelete cascade).
+    await tx.execute(sql`DELETE FROM matches WHERE tournament_id = ${id}`);
+    // Cascades to tournament entries / showcase submissions / reminders.
+    await tx.execute(sql`DELETE FROM tournaments WHERE id = ${id}`);
+  });
+
+  return c.json({ ok: true as const }, 200);
+});
+
 // ─── POST /tournaments/:id/register ────────────────────────────────────────
 
 const registerRoute = createRoute({
