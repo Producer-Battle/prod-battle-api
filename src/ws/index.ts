@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server } from 'node:http';
 import { eq, sql } from 'drizzle-orm';
 import { WebSocketServer } from 'ws';
+import { auth } from '../auth/config.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matchTeams, matches } from '../db/schema.js';
 import { publish } from '../realtime/pubsub.js';
@@ -93,6 +94,23 @@ async function ensureGuestUser(handle: string, anonId: string | null): Promise<s
   // ON CONFLICT fired: a concurrent request claimed the handle. Reject -
   // the client reconnects and resolves through the byHandle path.
   return row?.id ?? null;
+}
+
+/** Resolve the authenticated (registered) user from the upgrade request's
+ *  session cookie - same auth path as the HTTP API. Returns null for guests
+ *  or when no valid session is present. */
+async function resolveSessionUserId(req: IncomingMessage): Promise<string | null> {
+  try {
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') headers.set(k, v);
+      else if (Array.isArray(v)) headers.set(k, v.join(', '));
+    }
+    const result = await auth.api.getSession({ headers });
+    return result?.user?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Find match by roomCode. */
@@ -238,12 +256,16 @@ export function attachWebSocket(server: Server): void {
           return;
         }
 
-        // Resolve player identity: ?user= or a generated guest id. The
-        // pb_anon cookie (set by the HTTP API) authenticates guests; a
-        // handle bound to someone else closes with 4003.
-        const rawUser = parseUserId(url);
-        const handle = rawUser ?? `guest-${randomUUID().slice(0, 8)}`;
-        const userId = await ensureGuestUser(handle, parseAnonId(req));
+        // Registered users authenticate via their session cookie (same as the
+        // HTTP API). Guests fall back to the ?user= handle + pb_anon cookie.
+        // Without the session path, logged-in users were rejected (4003),
+        // which silently broke the roster + chat - both ride this socket.
+        let userId = await resolveSessionUserId(req);
+        if (!userId) {
+          const rawUser = parseUserId(url);
+          const handle = rawUser ?? `guest-${randomUUID().slice(0, 8)}`;
+          userId = await ensureGuestUser(handle, parseAnonId(req));
+        }
         if (!userId) {
           ws.close(4003, 'identity not yours');
           return;

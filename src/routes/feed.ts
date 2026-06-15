@@ -1,8 +1,8 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { db } from '../db/client.js';
-import { genres, submissions, users } from '../db/schema.js';
+import { arPicks, genres, submissions, users } from '../db/schema.js';
 
 export const feedRoutes = new OpenAPIHono();
 
@@ -29,6 +29,9 @@ const FeedItem = z
       name: z.string(),
     }),
     matchRoomCode: z.string().nullable(),
+    // "A&R's Choice": how many A&R reps picked this track, and whether any
+    // of those picks is a cosign (the louder endorsement). Null = none.
+    arPicks: z.object({ count: z.number().int(), cosigned: z.boolean() }).nullable(),
   })
   .openapi('FeedItem');
 
@@ -90,6 +93,23 @@ feedRoutes.openapi(route, async (c) => {
     .orderBy(desc(submissions.createdAt))
     .limit(limit);
 
+  // A&R pick aggregate for these submissions (the "A&R's Choice" badge).
+  const ids = rows.map((r) => r.id);
+  const pickRows = ids.length
+    ? await d
+        .select({
+          submissionId: arPicks.submissionId,
+          cnt: sql<number>`count(*)::int`,
+          cosigned: sql<boolean>`bool_or(${arPicks.cosign})`,
+        })
+        .from(arPicks)
+        .where(inArray(arPicks.submissionId, ids))
+        .groupBy(arPicks.submissionId)
+    : [];
+  const pickMap = new Map(
+    pickRows.map((p) => [p.submissionId, { count: Number(p.cnt), cosigned: Boolean(p.cosigned) }]),
+  );
+
   // Sign audio URLs so they play from the private Scaleway bucket.
   // signUrl() passes through external URLs (e.g. the SoundHelix demo
   // tracks used for the initial seed) unchanged.
@@ -113,6 +133,7 @@ feedRoutes.openapi(route, async (c) => {
       },
       genre: { slug: r.genreSlug, name: r.genreName },
       matchRoomCode: null,
+      arPicks: pickMap.get(r.id) ?? null,
     })),
   );
   return c.json({ items });

@@ -295,6 +295,20 @@
       "when": 1780000000000,
       "tag": "0041_anon_id_drop_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1781000000000,
+      "tag": "0042_ar_engagement",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1781100000000,
+      "tag": "0043_connections",
+      "breakpoints": true
     }
   ]
 }

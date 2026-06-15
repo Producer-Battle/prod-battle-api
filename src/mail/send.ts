@@ -43,7 +43,9 @@ export type EmailPrefKey =
   | 'tournament_activity'
   | 'daily_activity'
   | 'match_results'
-  | 'honor_alerts';
+  | 'honor_alerts'
+  | 'ar_interest'
+  | 'social';
 
 const DEFAULT_FROM = process.env.SMTP_FROM ?? 'noreply@prodbattle.com';
 

@@ -26,6 +26,27 @@ export function s3(): S3Client {
   return _client;
 }
 
+let _publicClient: S3Client | null = null;
+
+// A client whose endpoint is the BROWSER-reachable address. Presigned upload
+// and download URLs must point at a host the browser can hit - in dev that's
+// http://localhost:9002 (S3_PUBLIC_ENDPOINT), not the compose-internal
+// http://minio:9000 used for server-side calls. Falls back to S3_ENDPOINT when
+// no separate public endpoint is set (prod uses a single, public address).
+export function s3Public(): S3Client {
+  if (_publicClient) return _publicClient;
+  _publicClient = new S3Client({
+    region: env.S3_REGION ?? 'fr-par',
+    endpoint: env.S3_PUBLIC_ENDPOINT ?? env.S3_ENDPOINT,
+    forcePathStyle: true,
+    credentials:
+      env.S3_ACCESS_KEY && env.S3_SECRET_KEY
+        ? { accessKeyId: env.S3_ACCESS_KEY, secretAccessKey: env.S3_SECRET_KEY }
+        : undefined,
+  });
+  return _publicClient;
+}
+
 export function bucket(): string {
   if (!env.S3_BUCKET) throw new Error('S3_BUCKET not set');
   return env.S3_BUCKET;
@@ -50,7 +71,9 @@ export function publicUrl(key: string): string {
 }
 
 export async function signedDownloadUrl(key: string, ttlSec = 86_400): Promise<string> {
-  return getSignedUrl(s3(), new GetObjectCommand({ Bucket: bucket(), Key: key }), {
+  // Presign against the browser-reachable endpoint so the URL plays back in
+  // the client (in dev the internal minio:9000 host isn't resolvable there).
+  return getSignedUrl(s3Public(), new GetObjectCommand({ Bucket: bucket(), Key: key }), {
     expiresIn: ttlSec,
   });
 }
@@ -92,7 +115,7 @@ export async function presignAvatarUpload(
   const key = `avatars/${userId}.${ext}`;
   const b = bucket();
   const uploadUrl = await getSignedUrl(
-    s3(),
+    s3Public(),
     new PutObjectCommand({ Bucket: b, Key: key, ContentType: contentType }),
     { expiresIn: ttlSec },
   );

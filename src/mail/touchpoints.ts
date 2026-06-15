@@ -67,6 +67,221 @@ export async function notifyTournamentStartIn24h(
   });
 }
 
+// ── A&R engagement ───────────────────────────────────────────────────────────
+
+/** Tell a producer an A&R rep picked one of their tracks. */
+export async function notifyArPick(
+  producerId: string,
+  submissionId: string,
+  arHandle: string,
+  score: number,
+  note: string | null,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string; title: string | null }>(
+    sql`SELECT u.email, u.handle, s.title
+          FROM users u JOIN submissions s ON s.id = ${submissionId}
+         WHERE u.id = ${producerId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string; title: string | null }>)[0];
+  if (!row) return;
+  const track = row.title ?? 'your track';
+  const stars = '★'.repeat(score) + '☆'.repeat(5 - score);
+  await sendIfOptedIn(producerId, 'ar_interest', {
+    from: FROM,
+    to: row.email,
+    subject: `An A&R picked "${track}" ${stars}`,
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${arHandle} (A&R) gave "${track}" an A&R Pick: ${score}/5.`,
+      note ? `They left a note: "${note}"` : '',
+      '',
+      `See your profile: ${SITE_URL}/${row.handle}`,
+      '',
+      '- The Producer Battle team',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p><strong>@${arHandle}</strong> (A&R) gave <strong>"${track}"</strong> an A&R Pick: ${score}/5 ${stars}.</p>`,
+      note ? `<p>They left a note: <em>"${note}"</em></p>` : '',
+      `<p><a href="${SITE_URL}/${row.handle}">View your profile</a></p>`,
+      '<p>- The Producer Battle team</p>',
+    ]
+      .filter(Boolean)
+      .join(''),
+  });
+}
+
+/** Tell a producer a label/A&R wants to connect. */
+export async function notifyArContactRequest(
+  producerId: string,
+  arHandle: string,
+  message: string,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT email, handle FROM users WHERE id = ${producerId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string }>)[0];
+  if (!row) return;
+  await sendIfOptedIn(producerId, 'ar_interest', {
+    from: FROM,
+    to: row.email,
+    subject: 'An A&R is interested in your work',
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${arHandle} (A&R) wants to connect:`,
+      `"${message}"`,
+      '',
+      `Respond from your inbox: ${SITE_URL}/inbox`,
+      '',
+      '- The Producer Battle team',
+    ].join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p><strong>@${arHandle}</strong> (A&R) wants to connect:</p>`,
+      `<blockquote>${message}</blockquote>`,
+      `<p><a href="${SITE_URL}/inbox">Respond</a></p>`,
+      '<p>- The Producer Battle team</p>',
+    ].join(''),
+  });
+}
+
+/** Tell an A&R the producer accepted/declined their reach-out. */
+export async function notifyArContactResponse(
+  arUserId: string,
+  producerHandle: string,
+  accepted: boolean,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT email, handle FROM users WHERE id = ${arUserId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string }>)[0];
+  if (!row) return;
+  const verb = accepted ? 'accepted' : 'declined';
+  await sendIfOptedIn(arUserId, 'ar_interest', {
+    from: FROM,
+    to: row.email,
+    subject: `@${producerHandle} ${verb} your A&R request`,
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${producerHandle} ${verb} your request to connect.`,
+      '',
+      '- The Producer Battle team',
+    ].join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p>@${producerHandle} <strong>${verb}</strong> your request to connect.</p>`,
+      '<p>- The Producer Battle team</p>',
+    ].join(''),
+  });
+}
+
+/** Tell a producer they won an A&R brief. */
+export async function notifyArBriefWinner(
+  producerId: string,
+  briefTitle: string,
+  arHandle: string,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT email, handle FROM users WHERE id = ${producerId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string }>)[0];
+  if (!row) return;
+  await sendIfOptedIn(producerId, 'ar_interest', {
+    from: FROM,
+    to: row.email,
+    subject: `You won the A&R brief: "${briefTitle}"`,
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${arHandle} picked your entry as the winner of "${briefTitle}".`,
+      '',
+      `Briefs: ${SITE_URL}/briefs`,
+      '',
+      '- The Producer Battle team',
+    ].join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p><strong>@${arHandle}</strong> picked your entry as the winner of <strong>"${briefTitle}"</strong>.</p>`,
+      `<p><a href="${SITE_URL}/briefs">View briefs</a></p>`,
+      '<p>- The Producer Battle team</p>',
+    ].join(''),
+  });
+}
+
+// ── Connections (friends) ────────────────────────────────────────────────────
+
+/** Tell a user someone sent them a friend request. */
+export async function notifyConnectionRequest(
+  addresseeId: string,
+  requesterHandle: string,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT email, handle FROM users WHERE id = ${addresseeId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string }>)[0];
+  if (!row) return;
+  await sendIfOptedIn(addresseeId, 'social', {
+    from: FROM,
+    to: row.email,
+    subject: `@${requesterHandle} wants to connect`,
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${requesterHandle} sent you a friend request on Prod Battle.`,
+      '',
+      `Respond: ${SITE_URL}/inbox`,
+      '',
+      '- The Producer Battle team',
+    ].join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p><strong>@${requesterHandle}</strong> sent you a friend request.</p>`,
+      `<p><a href="${SITE_URL}/inbox">Respond</a></p>`,
+      '<p>- The Producer Battle team</p>',
+    ].join(''),
+  });
+}
+
+/** Tell the requester their friend request was accepted. */
+export async function notifyConnectionAccepted(
+  requesterId: string,
+  addresseeHandle: string,
+): Promise<void> {
+  const d = db();
+  const rows = await d.execute<{ email: string; handle: string }>(
+    sql`SELECT email, handle FROM users WHERE id = ${requesterId} LIMIT 1`,
+  );
+  const row = (rows as Array<{ email: string; handle: string }>)[0];
+  if (!row) return;
+  await sendIfOptedIn(requesterId, 'social', {
+    from: FROM,
+    to: row.email,
+    subject: `@${addresseeHandle} accepted your request`,
+    text: [
+      `Hi ${row.handle},`,
+      '',
+      `@${addresseeHandle} accepted your friend request. You're connected.`,
+      '',
+      '- The Producer Battle team',
+    ].join('\n'),
+    html: [
+      `<p>Hi ${row.handle},</p>`,
+      `<p>@${addresseeHandle} accepted your friend request - you're connected.</p>`,
+      '<p>- The Producer Battle team</p>',
+    ].join(''),
+  });
+}
+
 // ── Showcase open ─────────────────────────────────────────────────────────────
 
 /**

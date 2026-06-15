@@ -94,6 +94,7 @@ const MeResponse = z
       stats: z.boolean(),
       packs: z.boolean(),
       achievements: z.boolean(),
+      friends: z.boolean(),
     }),
   })
   .openapi('MeResponse');
@@ -236,6 +237,7 @@ meRoutes.openapi(getMeRoute, async (c) => {
         stats: row.profileVisibility?.stats ?? true,
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
+        friends: row.profileVisibility?.friends ?? true,
       },
     },
     200,
@@ -267,6 +269,7 @@ const PatchMeBody = z
         stats: z.boolean().optional(),
         packs: z.boolean().optional(),
         achievements: z.boolean().optional(),
+        friends: z.boolean().optional(),
       })
       .optional(),
   })
@@ -451,6 +454,7 @@ meRoutes.openapi(patchMeRoute, async (c) => {
         stats: row.profileVisibility?.stats ?? true,
         packs: row.profileVisibility?.packs ?? true,
         achievements: row.profileVisibility?.achievements ?? true,
+        friends: row.profileVisibility?.friends ?? true,
       },
     },
     200,
@@ -836,6 +840,7 @@ meRoutes.openapi(getUserRoute, async (c) => {
       bio: producerProfiles.bio,
       socialLinks: producerProfiles.socialLinks,
       pinnedSubmissionIds: producerProfiles.pinnedSubmissionIds,
+      profileVisibility: users.profileVisibility,
     })
     .from(users)
     .leftJoin(producerProfiles, eq(producerProfiles.userId, users.id))
@@ -1002,10 +1007,32 @@ meRoutes.openapi(getUserRoute, async (c) => {
     );
   }
 
+  // Friends (accepted connections) - shown on the profile unless the owner
+  // has turned the section off via profileVisibility.friends.
+  const showFriends = (row.profileVisibility as Record<string, boolean> | null)?.friends !== false;
+  let friends: Array<{ handle: string; avatarUrl: string | null }> = [];
+  if (showFriends) {
+    const fr = await d.execute<{ handle: string; avatar_url: string | null }>(sql`
+      SELECT u.handle, u.avatar_url
+        FROM connections c
+        JOIN users u ON u.id = (CASE WHEN c.requester_id = ${row.id} THEN c.addressee_id ELSE c.requester_id END)
+       WHERE (c.requester_id = ${row.id} OR c.addressee_id = ${row.id}) AND c.status = 'accepted'
+       ORDER BY c.responded_at DESC NULLS LAST
+       LIMIT 24`);
+    friends = await Promise.all(
+      fr.map(async (f) => ({
+        handle: f.handle,
+        avatarUrl: f.avatar_url ? await signUrl(f.avatar_url, 3600) : null,
+      })),
+    );
+  }
+
   return c.json({
     id: row.id,
     handle: row.handle,
     avatarUrl: row.avatarUrl ? await signUrl(row.avatarUrl, 3600) : null,
+    friends,
+    friendsVisible: showFriends,
     accentColor: row.accentColor ?? null,
     isSupporter: row.plan === 'paid',
     role: row.role,
@@ -1314,6 +1341,8 @@ const EmailPrefsShape = z
     daily_activity: z.boolean(),
     match_results: z.boolean(),
     honor_alerts: z.boolean(),
+    ar_interest: z.boolean(),
+    social: z.boolean(),
     account_security: z.boolean(),
     billing: z.boolean(),
   })
@@ -1352,6 +1381,8 @@ meRoutes.openapi(getEmailPrefsRoute, async (c) => {
     daily_activity: (stored as Record<string, boolean>).daily_activity ?? true,
     match_results: (stored as Record<string, boolean>).match_results ?? true,
     honor_alerts: (stored as Record<string, boolean>).honor_alerts ?? true,
+    ar_interest: (stored as Record<string, boolean>).ar_interest ?? true,
+    social: (stored as Record<string, boolean>).social ?? true,
     account_security: (stored as Record<string, boolean>).account_security ?? true,
     billing: (stored as Record<string, boolean>).billing ?? true,
   };
@@ -1367,6 +1398,8 @@ const PatchEmailPrefsBody = z
     daily_activity: z.boolean().optional(),
     match_results: z.boolean().optional(),
     honor_alerts: z.boolean().optional(),
+    ar_interest: z.boolean().optional(),
+    social: z.boolean().optional(),
     // account_security and billing can be sent but cannot be set to false.
     account_security: z.boolean().optional(),
     billing: z.boolean().optional(),

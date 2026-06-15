@@ -495,18 +495,20 @@ phasesRoutes.openapi(votableRoute, async (c) => {
   }
 
   const matchIds = matchRows.map((r) => r.match_id);
-  const subRows = await d.execute<{
-    id: string;
-    match_id: string;
-    user_id: string | null;
-    audio_url: string;
-    duration_sec: number | null;
-  }>(
-    sql`SELECT id, match_id, user_id, audio_url, duration_sec
-          FROM submissions
-         WHERE match_id = ANY(${matchIds})
-         ORDER BY id`,
-  );
+  // Use the query builder's inArray - a raw `ANY(${matchIds})` makes the
+  // postgres driver bind the JS array as a parameter list `($1, $2, ...)`
+  // (a scalar for a single id), which Postgres rejects as a malformed array.
+  const subRows = await d
+    .select({
+      id: submissions.id,
+      match_id: submissions.matchId,
+      user_id: submissions.userId,
+      audio_url: submissions.audioUrl,
+      duration_sec: submissions.durationSec,
+    })
+    .from(submissions)
+    .where(inArray(submissions.matchId, matchIds))
+    .orderBy(submissions.id);
 
   type SubRow = {
     id: string;

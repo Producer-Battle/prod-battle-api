@@ -155,10 +155,12 @@ export const users = pgTable(
     calibrationMatchesRemaining: integer().notNull().default(10),
     // Per-section profile visibility. Public profile shows all sections by
     // default; user can hide individual sections. JSON shape:
-    //   { matchHistory: bool, stats: bool, packs: bool, achievements: bool }
+    //   { matchHistory: bool, stats: bool, packs: bool, achievements: bool, friends: bool }
     // Missing keys default to true.
     profileVisibility: jsonb()
-      .$type<Partial<Record<'matchHistory' | 'stats' | 'packs' | 'achievements', boolean>>>()
+      .$type<
+        Partial<Record<'matchHistory' | 'stats' | 'packs' | 'achievements' | 'friends', boolean>>
+      >()
       .notNull()
       .default({}),
     // Per-category email opt-in preferences. All true by default.
@@ -692,6 +694,105 @@ export const messages = pgTable('messages', {
   readAt: timestamp({ withTimezone: true }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── A&R engagement layer ────────────────────────────────────────────────────
+// A&R reps (label scouts) rate producer tracks. This is a SEPARATE signal from
+// community match voting - it never changes who wins a battle. It powers the
+// "A&R's Choice" badge, the Most-Scouted board, and producer notifications.
+export const arPicks = pgTable(
+  'ar_picks',
+  {
+    arUserId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    submissionId: uuid()
+      .notNull()
+      .references(() => submissions.id, { onDelete: 'cascade' }),
+    // 1-5 rating. The presence of a row is the "pick"; the score ranks them.
+    score: integer().notNull(),
+    note: text(),
+    // A rarer, louder public endorsement than a normal pick.
+    cosign: boolean().notNull().default(false),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.arUserId, t.submissionId] })],
+);
+
+// "A label is interested" - an A&R asks to open a channel with a producer.
+// Gated on producer_profiles.open_to_ar at the route layer.
+export const arContactStatus = pgEnum('ar_contact_status', ['pending', 'accepted', 'declined']);
+export const arContactRequests = pgTable('ar_contact_requests', {
+  id: uuid().primaryKey().defaultRandom(),
+  arUserId: uuid()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  producerId: uuid()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  message: text().notNull(),
+  status: arContactStatus().notNull().default('pending'),
+  respondedAt: timestamp({ withTimezone: true }),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+// A&R Briefs - a label posts a prompt with a deadline + reward; producers enter
+// one track each; the A&R picks a winner. The two-sided engagement flywheel.
+export const arBriefStatus = pgEnum('ar_brief_status', ['open', 'judging', 'closed']);
+export const arBriefs = pgTable('ar_briefs', {
+  id: uuid().primaryKey().defaultRandom(),
+  arUserId: uuid()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  title: text().notNull(),
+  description: text().notNull(),
+  genreId: uuid().references(() => genres.id, { onDelete: 'set null' }),
+  bpmHint: text(),
+  reward: text(),
+  deadline: timestamp({ withTimezone: true }).notNull(),
+  status: arBriefStatus().notNull().default('open'),
+  // Set when the A&R crowns a winner; plain uuid to avoid a circular FK with
+  // ar_brief_submissions (which references ar_briefs).
+  winnerSubmissionId: uuid(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+export const arBriefSubmissions = pgTable(
+  'ar_brief_submissions',
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    briefId: uuid()
+      .notNull()
+      .references(() => arBriefs.id, { onDelete: 'cascade' }),
+    producerId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    audioUrl: text().notNull(),
+    title: text(),
+    note: text(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('ar_brief_submissions_brief_producer_unique').on(t.briefId, t.producerId)],
+);
+
+// Mutual connections ("friends"): one row per request. requester -> addressee.
+// A friendship exists when a row between the two (in either direction) is
+// 'accepted'. Distinct from `follows` (one-directional, no approval).
+export const connectionStatus = pgEnum('connection_status', ['pending', 'accepted', 'declined']);
+export const connections = pgTable(
+  'connections',
+  {
+    requesterId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    addresseeId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: connectionStatus().notNull().default('pending'),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    respondedAt: timestamp({ withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.requesterId, t.addresseeId] })],
+);
 
 // Per-match room chat. Persisted so rejoiners can hydrate the last N
 // messages on connect; live broadcast goes through Redis pub/sub on the

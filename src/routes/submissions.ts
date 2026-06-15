@@ -11,7 +11,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { and, eq, sql } from 'drizzle-orm';
-import { bucket, publicUrl, s3, signUrl } from '../audio/s3.js';
+import { bucket, publicUrl, s3Public, signUrl } from '../audio/s3.js';
 import { randomSongTitle } from '../audio/title.js';
 import { db } from '../db/client.js';
 import { matchPlayers, matches, submissions, users } from '../db/schema.js';
@@ -156,7 +156,7 @@ submissionsRoutes.openapi(uploadUrlRoute, async (c) => {
   const key = `matches/${result.match.id}/${result.user.id}.${ext}`;
 
   const url = await getSignedUrl(
-    s3(),
+    s3Public(),
     new PutObjectCommand({
       Bucket: bucket(),
       Key: key,
