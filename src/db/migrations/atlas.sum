@@ -1,4 +1,4 @@
-h1:m/v/vNH9PjYQjHTLrYWp82TtNhcyK+9f53VZ7ZQMpY4=
+h1:YJRLgcLQ/hlnkPlBjdk4/RToOAI+BBvC1uaw/2TMxZc=
 0000_material_patriot.sql h1:CypHmpmK/awY6UduUqvWGHhbsgv7IFIENgRPAElLU7k=
 0001_secret_magneto.sql h1:zxWhmoFVPlpZxgyvujbLij8GRMJL50C9USJKMjoNZT8=
 0002_giant_bedlam.sql h1:4GV8p5LRj/apmO+qhyNWIOPJWlrTxEGiVNElbwpsFw4=
@@ -43,3 +43,4 @@ h1:m/v/vNH9PjYQjHTLrYWp82TtNhcyK+9f53VZ7ZQMpY4=
 0041_anon_id_drop_unique.sql h1:SnVCV+ShtBssVJZHDuBY1v1VhDyD4TK3xxT+ZfQjRjw=
 0042_ar_engagement.sql h1:+w3hed/LWM9BGr9SOzH/dg8olKHFy6eklpXZWXUIMKM=
 0043_connections.sql h1:gl0XoG2MqfhjOKI8JD19LMndTQQyvgB/i26MbWV244I=
+0044_studio_submissions.sql h1:j3qvAqzAOrYP1EvpHi3hVPVF7iqJJApYY8KolCcNodo=

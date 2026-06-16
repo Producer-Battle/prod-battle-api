@@ -11,11 +11,13 @@
 // upload flow.
 
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { signUrl } from '../audio/s3.js';
 import { buildPackZip } from '../audio/zip.js';
 import { db } from '../db/client.js';
-import { genres, matches, samplePacks } from '../db/schema.js';
+import { genres, matches, samplePackVotes, samplePacks } from '../db/schema.js';
+
+const ErrorBody = z.object({ error: z.string(), message: z.string() });
 
 export const samplePacksRoutes = new OpenAPIHono();
 
@@ -173,6 +175,8 @@ const SelectablePackSchema = z.object({
   genre: z.object({ slug: z.string(), name: z.string() }),
   stemCount: z.number().int(),
   isMine: z.boolean(),
+  voteCount: z.number().int(),
+  myVote: z.boolean(),
 });
 
 const listSelectableRoute = createRoute({
@@ -216,6 +220,10 @@ samplePacksRoutes.openapi(listSelectableRoute, async (c) => {
       createdBy: samplePacks.createdBy,
       genreSlug: genres.slug,
       genreName: genres.name,
+      voteCount: sql<number>`(SELECT count(*)::int FROM sample_pack_votes v WHERE v.pack_id = ${samplePacks.id})`,
+      myVote: callerId
+        ? sql<boolean>`EXISTS (SELECT 1 FROM sample_pack_votes v WHERE v.pack_id = ${samplePacks.id} AND v.voter_id = ${callerId})`
+        : sql<boolean>`false`,
     })
     .from(samplePacks)
     .innerJoin(genres, eq(genres.id, samplePacks.genreId))
@@ -233,8 +241,52 @@ samplePacksRoutes.openapi(listSelectableRoute, async (c) => {
           genre: { slug: r.genreSlug, name: r.genreName },
           stemCount: (r.samples ?? []).length,
           isMine: callerId !== null && r.createdBy === callerId,
+          voteCount: Number(r.voteCount ?? 0),
+          myVote: Boolean(r.myVote),
         })),
     },
     200,
   );
+});
+
+// ─── POST /sample-packs/:id/vote (community upvote, idempotent) ───────────────
+
+const packVoteRoute = createRoute({
+  method: 'post',
+  path: '/sample-packs/{id}/vote',
+  tags: ['sample-packs'],
+  summary: 'Upvote a sample pack',
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: {
+    200: {
+      description: 'Voted',
+      content: {
+        'application/json': { schema: z.object({ voted: z.literal(true), voteCount: z.number() }) },
+      },
+    },
+    401: { description: 'Unauthenticated', content: { 'application/json': { schema: ErrorBody } } },
+    404: { description: 'Not found', content: { 'application/json': { schema: ErrorBody } } },
+  },
+});
+
+samplePacksRoutes.openapi(packVoteRoute, async (c) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: 'unauthenticated', message: 'Sign in.' }, 401);
+  const { id } = c.req.valid('param');
+  const d = db();
+
+  const [pack] = await d
+    .select({ id: samplePacks.id })
+    .from(samplePacks)
+    .where(eq(samplePacks.id, id))
+    .limit(1);
+  if (!pack) return c.json({ error: 'not_found', message: 'No such pack.' }, 404);
+
+  await d.insert(samplePackVotes).values({ packId: id, voterId: user.id }).onConflictDoNothing();
+
+  const counts = await d
+    .select({ n: sql<number>`count(*)::int` })
+    .from(samplePackVotes)
+    .where(eq(samplePackVotes.packId, id));
+  return c.json({ voted: true as const, voteCount: Number(counts[0]?.n ?? 0) }, 200);
 });

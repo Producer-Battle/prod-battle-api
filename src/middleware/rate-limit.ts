@@ -125,13 +125,14 @@ export function _resetClientForTest(): void {
 
 // ─── Per-producer daily quotas ────────────────────────────────────────────────
 
-type ProducerQuotaKind = 'match' | 'sub' | 'pack' | 'genre';
+type ProducerQuotaKind = 'match' | 'sub' | 'pack' | 'genre' | 'flip';
 
 const PRODUCER_LIMITS_FREE: Record<ProducerQuotaKind, { max: number; ttl: number }> = {
   match: { max: 20, ttl: 86_400 },
   sub: { max: 32, ttl: 86_400 },
   pack: { max: 5, ttl: 86_400 },
   genre: { max: 1, ttl: 604_800 },
+  flip: { max: 5, ttl: 86_400 },
 };
 
 const PRODUCER_LIMITS_PAID: Record<ProducerQuotaKind, { max: number; ttl: number }> = {
@@ -139,6 +140,7 @@ const PRODUCER_LIMITS_PAID: Record<ProducerQuotaKind, { max: number; ttl: number
   sub: { max: 160, ttl: 86_400 },
   pack: { max: 25, ttl: 86_400 },
   genre: { max: 5, ttl: 604_800 },
+  flip: { max: 25, ttl: 86_400 },
 };
 
 /**

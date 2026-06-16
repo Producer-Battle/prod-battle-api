@@ -328,6 +328,11 @@ export const samplePacks = pgTable('sample_packs', {
   // generated/pool packs and legacy uploaded rows. Used as an audit trail
   // if a DMCA request is filed against a user-uploaded pack.
   copyrightAttestedAt: timestamp({ withTimezone: true }),
+  // Review state for the shared pool. NULL = a kind='uploaded' pack still in
+  // the A&R/admin review queue. Set when approved (promoted to pool) or
+  // rejected. Pool/generated packs are backfilled to created_at.
+  reviewedAt: timestamp({ withTimezone: true }),
+  reviewedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -349,10 +354,49 @@ export const flipSources = pgTable('flip_sources', {
   // Upstream id for dedup + attribution (Freesound sound id, etc.).
   sourceId: text(),
   durationSec: integer(),
+  // active=true means usable in Sample Flip matches (the match picker + the
+  // public list filter on this). Admin-generated sources are active on
+  // creation; community submissions start active=false until approved.
   active: boolean().notNull().default(true),
+  // Review state for community submissions. NULL = pending review (shown in
+  // the A&R/admin review queue). Set when an A&R/admin approves or rejects.
+  // Admin-generated rows are backfilled to created_at (never pending).
+  reviewedAt: timestamp({ withTimezone: true }),
+  reviewedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid().references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
+
+// Community upvotes on a submitted flip source (signal for the review queue).
+// Mirrors genre_votes.
+export const flipSourceVotes = pgTable(
+  'flip_source_votes',
+  {
+    flipSourceId: uuid()
+      .notNull()
+      .references(() => flipSources.id, { onDelete: 'cascade' }),
+    voterId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.flipSourceId, t.voterId] })],
+);
+
+// Community upvotes on a sample pack (signal for the review queue + browse).
+export const samplePackVotes = pgTable(
+  'sample_pack_votes',
+  {
+    packId: uuid()
+      .notNull()
+      .references(() => samplePacks.id, { onDelete: 'cascade' }),
+    voterId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.packId, t.voterId] })],
+);
 
 /*
  * Matches - solo practice, 1v1 duels, team battles up to 5v5, FFA up to 8.
